@@ -40,6 +40,8 @@
 - `/health`, `/api/*`, และ `/ws` ไม่ต้องใช้ token
 - Server start ได้โดยไม่ต้องตั้งค่า `APPMO_TOKEN`
 - Screenshot stream v1 ใช้ polling จาก UI ทุก 1000ms แทน low-latency video stream
+- Mouse/touch gestures บนภาพหน้าจอใช้ vendored `interact.js` 1.10.27 เพื่อไม่ต้องดูแล raw pointer edge cases เอง
+- Android low-latency remote-control library ที่ควรต่อยอดคือ `scrcpy`/`@yume-chan/scrcpy`; v1 ยังใช้ `adb shell input` เป็น transport หลังจาก gesture layer
 - iOS tap/swipe ใช้ capability path ของ `xcrun simctl io <udid> tap/swipe`; ถ้า Xcode ไม่รองรับจะคืน `UnsupportedCapability`
 
 ## Test Plan

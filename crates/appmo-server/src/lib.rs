@@ -45,8 +45,8 @@ pub fn build_router<R: ProcessRunner + Clone>(controller: DeviceManager<R>) -> R
         .layer(TraceLayer::new_for_http())
 }
 
-async fn index() -> Html<&'static str> {
-    Html(appmo_web::dashboard_html())
+async fn index() -> Html<String> {
+    Html(appmo_web::dashboard_html().to_string())
 }
 
 async fn health() -> Json<serde_json::Value> {
