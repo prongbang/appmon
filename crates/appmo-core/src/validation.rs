@@ -38,7 +38,26 @@ pub fn text_input(value: &str) -> AppResult<()> {
     if value.len() > 4096 {
         return Err(AppError::InvalidInput("text is too long".to_string()));
     }
+    if value.chars().any(|c| matches!(c, '\n' | '\r' | '\0')) {
+        return Err(AppError::InvalidInput(
+            "text contains unsupported control characters".to_string(),
+        ));
+    }
     Ok(())
+}
+
+pub fn key_input(value: &str) -> AppResult<()> {
+    non_empty(value, "key")?;
+    if value
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.'))
+    {
+        Ok(())
+    } else {
+        Err(AppError::InvalidInput(
+            "key contains unsupported characters".to_string(),
+        ))
+    }
 }
 
 pub fn coordinate(value: u32, field: &str) -> AppResult<()> {

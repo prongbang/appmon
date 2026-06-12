@@ -64,6 +64,31 @@ fn MonitorPane() -> Element {
         section { class: "overflow-auto bg-slate-50 p-6",
             div { class: "mb-5 flex justify-end",
                 div { class: "flex flex-wrap items-center gap-2",
+                    select { id: "viewMode", title: "Preview mode", aria_label: "Preview mode",
+                        option { value: "poll", selected: true, "Polling" }
+                        option { value: "stream", "Stream" }
+                    }
+                    select { id: "streamFps", title: "Stream FPS", aria_label: "Stream FPS",
+                        option { value: "4", "4 fps" }
+                        option { value: "8", selected: true, "8 fps" }
+                        option { value: "12", "12 fps" }
+                        option { value: "15", "15 fps" }
+                    }
+                    select { id: "streamFormat", title: "Stream format", aria_label: "Stream format",
+                        option { value: "png", selected: true, "Fast PNG" }
+                        option { value: "jpeg", "Small JPEG" }
+                    }
+                    select { id: "streamScale", title: "Stream scale", aria_label: "Stream scale",
+                        option { value: "540", "540p" }
+                        option { value: "720", selected: true, "720p" }
+                        option { value: "1080", "1080p" }
+                        option { value: "4096", "Full" }
+                    }
+                    select { id: "streamQuality", title: "Stream quality", aria_label: "Stream quality",
+                        option { value: "55", "Eco" }
+                        option { value: "70", selected: true, "Balanced" }
+                        option { value: "85", "Sharp" }
+                    }
                     button { id: "shot", class: "btn btn-secondary", "Screenshot" }
                     button { id: "logsBtn", class: "btn btn-secondary", "Logs" }
                     button { id: "recordStart", class: "btn btn-secondary", "Record" }
@@ -169,15 +194,20 @@ body {
   background: var(--tw-slate-50);
   color: var(--tw-slate-950);
 }
-button, input, textarea { font: inherit; min-width: 0; }
+button, input, textarea, select { font: inherit; min-width: 0; }
 button { cursor: pointer; white-space: nowrap; }
-input, textarea {
+input, textarea, select {
   width: 100%;
   border: 1px solid var(--theme-line);
   border-radius: var(--theme-radius);
   padding: 10px 11px;
   background: var(--tw-slate-50);
   color: var(--tw-slate-950);
+}
+select {
+  width: auto;
+  min-width: 86px;
+  cursor: pointer;
 }
 pre {
   margin: 0;
@@ -370,7 +400,7 @@ pre {
 "#;
 
 const APP_SCRIPT: &str = r#"
-const state = { devices: [], selected: null, ws: null, poll: null, pointerStart: null };
+const state = { devices: [], selected: null, ws: null, poll: null, pointerStart: null, pending: new Map(), requestSeq: 0 };
 const el = id => document.getElementById(id);
 
 function setStatus(text) {
@@ -428,11 +458,62 @@ async function refreshScreenshot() {
 }
 function startPolling() {
   clearInterval(state.poll);
+  if (!state.selected) return;
   state.poll = setInterval(() => refreshScreenshot().catch(err => setStatus(err.message)), 1000);
+}
+function startScreenshotStream() {
+  clearInterval(state.poll);
+  if (!state.selected) return;
+  const screen = el('screen');
+  const params = new URLSearchParams({
+    fps: el('streamFps').value,
+    format: el('streamFormat').value,
+    max_width: el('streamScale').value,
+    quality: el('streamQuality').value,
+    t: Date.now().toString()
+  });
+  screen.src = `/api/devices/${selectedId()}/screenshot-stream?${params}`;
+  screen.style.display = 'block';
+  el('screenEmpty').style.display = 'none';
+  setStatus(`Streaming ${el('streamFps').value} fps / ${el('streamFormat').value.toUpperCase()}`);
+}
+function restartPreview() {
+  if (el('viewMode').value === 'stream') {
+    startScreenshotStream();
+  } else {
+    refreshScreenshot().catch(err => setStatus(err.message));
+    startPolling();
+  }
 }
 async function post(path, body) {
   await json(path, { method: 'POST', body: JSON.stringify(body || {}) });
   setStatus('Command sent');
+}
+function wsReady() {
+  return state.ws && state.ws.readyState === WebSocket.OPEN;
+}
+function sendWsControl(type, payload) {
+  if (!state.selected || !wsReady()) return null;
+  const requestId = `${Date.now()}-${++state.requestSeq}`;
+  const message = { request_id: requestId, device_id: state.selected.id, type, ...payload };
+  const promise = new Promise((resolve, reject) => {
+    const timeout = setTimeout(() => {
+      state.pending.delete(requestId);
+      reject(new Error('Control command timed out'));
+    }, 2000);
+    state.pending.set(requestId, { resolve, reject, timeout });
+  });
+  state.ws.send(JSON.stringify(message));
+  return promise;
+}
+async function control(type, payload, restPath, restBody = payload) {
+  const wsPromise = sendWsControl(type, payload);
+  if (wsPromise) {
+    await wsPromise;
+    setStatus('Command sent');
+    return;
+  }
+  await post(restPath, restBody);
 }
 function imagePoint(event) {
   return clientPointToImage(event.clientX, event.clientY);
@@ -455,22 +536,23 @@ async function sendPointerCommand(start, end) {
   const dx = Math.abs(end.x - start.x);
   const dy = Math.abs(end.y - start.y);
   if (dx < 8 && dy < 8) {
-    await post(`/api/devices/${selectedId()}/input/tap`, end);
+    await control('tap', end, `/api/devices/${selectedId()}/input/tap`);
     setStatus(`Tapped ${end.x}, ${end.y}`);
   } else {
-    await post(`/api/devices/${selectedId()}/input/swipe`, {
+    const payload = {
       x1: start.x,
       y1: start.y,
       x2: end.x,
       y2: end.y,
       duration_ms: 250
-    });
+    };
+    await control('swipe', payload, `/api/devices/${selectedId()}/input/swipe`);
     setStatus(`Swiped ${start.x}, ${start.y} -> ${end.x}, ${end.y}`);
   }
   refreshScreenshot().catch(err => setStatus(err.message));
 }
 async function sendKeyValue(key) {
-  await post(`/api/devices/${selectedId()}/key`, { key });
+  await control('key', { key }, `/api/devices/${selectedId()}/key`);
   setStatus(`Sent ${key}`);
 }
 async function loadLogs() {
@@ -481,12 +563,40 @@ function connectWs() {
   if (state.ws) state.ws.close();
   const proto = location.protocol === 'https:' ? 'wss' : 'ws';
   state.ws = new WebSocket(`${proto}://${location.host}/ws`);
-  state.ws.onmessage = ev => setStatus(ev.data);
+  state.ws.onmessage = ev => {
+    try {
+      const msg = JSON.parse(ev.data);
+      if (msg.type === 'control_result' && msg.request_id) {
+        const pending = state.pending.get(msg.request_id);
+        if (!pending) return;
+        clearTimeout(pending.timeout);
+        state.pending.delete(msg.request_id);
+        msg.ok ? pending.resolve(msg) : pending.reject(new Error(msg.error || 'Control command failed'));
+        return;
+      }
+    } catch (_) {
+      // Plain status messages are still supported for compatibility.
+    }
+    setStatus(ev.data);
+  };
   state.ws.onopen = () => setStatus('Connected');
-  state.ws.onclose = () => setStatus('WebSocket disconnected');
+  state.ws.onclose = () => {
+    for (const pending of state.pending.values()) {
+      clearTimeout(pending.timeout);
+      pending.reject(new Error('WebSocket disconnected'));
+    }
+    state.pending.clear();
+    setStatus('WebSocket disconnected');
+    setTimeout(connectWs, 1000);
+  };
 }
 el('refresh').onclick = () => loadDevices().catch(err => setStatus(err.message));
 el('shot').onclick = () => refreshScreenshot().catch(err => setStatus(err.message));
+el('viewMode').onchange = () => restartPreview();
+el('streamFps').onchange = () => { if (el('viewMode').value === 'stream') startScreenshotStream(); };
+el('streamFormat').onchange = () => { if (el('viewMode').value === 'stream') startScreenshotStream(); };
+el('streamScale').onchange = () => { if (el('viewMode').value === 'stream') startScreenshotStream(); };
+el('streamQuality').onchange = () => { if (el('viewMode').value === 'stream') startScreenshotStream(); };
 el('logsBtn').onclick = () => loadLogs().catch(err => setStatus(err.message));
 el('navBack').onclick = () => sendKeyValue('BACK').catch(err => setStatus(err.message));
 el('navHome').onclick = () => sendKeyValue('HOME').catch(err => setStatus(err.message));

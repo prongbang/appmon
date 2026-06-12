@@ -6,7 +6,8 @@
 แกนระบบ:
 - Backend: Rust + Axum + Tokio
 - Frontend: Rust-rendered web dashboard ใน crate `appmo-web`
-- Transport: REST สำหรับคำสั่งทั่วไป และ WebSocket สำหรับ state/stream/progress
+- Transport: REST สำหรับคำสั่งทั่วไป และ WebSocket สำหรับ control/state/stream/progress
+- UDP control: datagram JSON สำหรับ client/native tool ที่ไม่ใช่ browser; ค่าเริ่มต้น bind ที่พอร์ตถัดจาก `APPMO_BIND`
 - Device control: ใช้ `adb` สำหรับ Android และ `xcrun simctl` สำหรับ iOS
 - Security: v1 ใช้งานแบบ no-token สำหรับ local/LAN development
 
@@ -17,12 +18,14 @@
   - `appmo-web`: HTML/CSS/JS dashboard served by Rust
 - Config:
   - `APPMO_BIND=0.0.0.0:8080`
+  - `APPMO_UDP_BIND=0.0.0.0:8081` หรือ `off` เพื่อปิด UDP
   - `ANDROID_ADB_PATH=/Users/inteniquetic/Library/Android/sdk/platform-tools/adb`
   - `IOS_XCRUN_PATH=/usr/bin/xcrun`
 - API v1:
   - `GET /health`
   - `GET /api/devices`
   - `GET /api/devices/:id/screenshot`
+  - `GET /api/devices/:id/screenshot-stream?format=png&fps=8`
   - `POST /api/devices/:id/input/tap`
   - `POST /api/devices/:id/input/swipe`
   - `POST /api/devices/:id/input/text`
@@ -33,15 +36,19 @@
   - `GET /api/devices/:id/logs`
   - `POST /api/devices/:id/record/start`
   - `POST /api/devices/:id/record/stop`
-  - `WS /ws`
+  - `WS /ws` สำหรับ low-latency control message แบบ request/response
 
 ## Implementation Notes
-- ทุก device command ผ่าน typed layer ใน `appmo-core` และรันผ่าน `tokio::process::Command` ด้วย args array
+- ทุก device command ผ่าน typed layer ใน `appmo-core`; คำสั่งทั่วไปยังรันผ่าน `tokio::process::Command` ด้วย args array
+- Android tap/swipe/text/key ใช้ fast path เป็น persistent `adb -s <serial> shell` session ต่อ device แล้วเขียน `input ...` เข้า stdin เพื่อลด process-spawn latency
+- Web UI ส่ง control ผ่าน WebSocket ก่อน และ fallback ไป REST endpoint เดิมถ้า WebSocket ไม่พร้อม
+- Browser ใช้ UDP raw โดยตรงไม่ได้ จึงยังใช้ WebSocket สำหรับหน้าเว็บ; UDP protocol มีไว้สำหรับ native/local control client ที่ส่ง datagram ได้
 - `/health`, `/api/*`, และ `/ws` ไม่ต้องใช้ token
 - Server start ได้โดยไม่ต้องตั้งค่า `APPMO_TOKEN`
-- Screenshot stream v1 ใช้ polling จาก UI ทุก 1000ms แทน low-latency video stream
+- Screen preview default ใช้ one-shot screenshot + polling 1000ms เพราะเบียด control path น้อยกว่า continuous stream ใน adb/screencap pipeline ปัจจุบัน
+- Experimental screenshot stream ใช้ Rust-served multipart stream (`multipart/x-mixed-replace`) และปรับ `fps`, `format`, `max_width`, และ JPEG `quality` ได้; ใช้เมื่อต้องการทดลองต่อเนื่องหรือ optimize bandwidth
 - Mouse/touch gestures บนภาพหน้าจอใช้ vendored `interact.js` 1.10.27 เพื่อไม่ต้องดูแล raw pointer edge cases เอง
-- Android low-latency remote-control library ที่ควรต่อยอดคือ `scrcpy`/`@yume-chan/scrcpy`; v1 ยังใช้ `adb shell input` เป็น transport หลังจาก gesture layer
+- Android low-latency remote-control library ที่ควรต่อยอดคือ `scrcpy`/`@yume-chan/scrcpy`; v1 ใช้ persistent `adb shell input` เป็น transport หลังจาก gesture layer
 - iOS tap/swipe ใช้ capability path ของ `xcrun simctl io <udid> tap/swipe`; ถ้า Xcode ไม่รองรับจะคืน `UnsupportedCapability`
 
 ## Test Plan

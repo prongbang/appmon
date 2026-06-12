@@ -3,6 +3,7 @@ use appmo_core::{
     KeyRequest, LogRequest, ProcessRunner, RecordRequest, SwipeRequest, TapRequest, TextRequest,
 };
 use axum::{
+    body::Body,
     extract::{
         ws::{Message, WebSocket, WebSocketUpgrade},
         Path, Query, State,
@@ -12,8 +13,14 @@ use axum::{
     routing::{get, post},
     Json, Router,
 };
-use serde::Serialize;
+use bytes::Bytes;
+use futures_util::stream;
+use image::{codecs::jpeg::JpegEncoder, imageops::FilterType, GenericImageView};
+use serde::{Deserialize, Serialize};
+use std::{convert::Infallible, net::SocketAddr, time::Duration};
+use tokio::net::UdpSocket;
 use tower_http::trace::TraceLayer;
+use tracing::{error, info, warn};
 
 #[derive(Clone)]
 pub struct AppState<R: ProcessRunner + Clone> {
@@ -25,6 +32,10 @@ pub fn build_router<R: ProcessRunner + Clone>(controller: DeviceManager<R>) -> R
     let api = Router::new()
         .route("/devices", get(list_devices::<R>))
         .route("/devices/:id/screenshot", get(screenshot::<R>))
+        .route(
+            "/devices/:id/screenshot-stream",
+            get(screenshot_stream::<R>),
+        )
         .route("/devices/:id/input/tap", post(tap::<R>))
         .route("/devices/:id/input/swipe", post(swipe::<R>))
         .route("/devices/:id/input/text", post(text::<R>))
@@ -53,6 +64,14 @@ async fn health() -> Json<serde_json::Value> {
     Json(serde_json::json!({ "ok": true }))
 }
 
+#[derive(Debug, Deserialize)]
+struct StreamRequest {
+    fps: Option<u32>,
+    format: Option<String>,
+    max_width: Option<u32>,
+    quality: Option<u8>,
+}
+
 async fn list_devices<R: ProcessRunner + Clone>(
     State(state): State<AppState<R>>,
 ) -> Result<Json<serde_json::Value>, ApiError> {
@@ -67,6 +86,92 @@ async fn screenshot<R: ProcessRunner + Clone>(
     let id = DeviceId::parse(&id)?;
     let bytes = state.controller.screenshot(&id).await?;
     Ok(([(header::CONTENT_TYPE, "image/png")], bytes).into_response())
+}
+
+async fn screenshot_stream<R: ProcessRunner + Clone>(
+    State(state): State<AppState<R>>,
+    Path(id): Path<String>,
+    Query(req): Query<StreamRequest>,
+) -> Result<Response, ApiError> {
+    let id = DeviceId::parse(&id)?;
+    let fps = req.fps.unwrap_or(8).clamp(1, 15);
+    let encode_jpeg = req
+        .format
+        .as_deref()
+        .is_some_and(|format| format.eq_ignore_ascii_case("jpeg"));
+    let max_width = req.max_width.unwrap_or(720).clamp(240, 4096);
+    let quality = req.quality.unwrap_or(70).clamp(35, 95);
+    let frame_delay = Duration::from_millis(1_000 / u64::from(fps));
+    let controller = state.controller.clone();
+    let boundary = "appmo-frame";
+    let body_stream = stream::unfold(
+        (controller, id, true),
+        move |(controller, id, first_frame)| async move {
+            if !first_frame {
+                tokio::time::sleep(frame_delay).await;
+            }
+            match controller.screenshot(&id).await {
+                Ok(bytes) => {
+                    let frame = if encode_jpeg {
+                        encode_stream_frame(&bytes, max_width, quality)
+                            .unwrap_or_else(|_| ("image/png", bytes))
+                    } else {
+                        ("image/png", bytes)
+                    };
+                    let header = format!(
+                    "\r\n--{boundary}\r\nContent-Type: {}\r\nContent-Length: {}\r\nCache-Control: no-store\r\n\r\n",
+                    frame.0,
+                    frame.1.len()
+                );
+                    let mut payload = Vec::with_capacity(header.len() + frame.1.len());
+                    payload.extend_from_slice(header.as_bytes());
+                    payload.extend_from_slice(&frame.1);
+                    Some((
+                        Ok::<Bytes, Infallible>(Bytes::from(payload)),
+                        (controller, id, false),
+                    ))
+                }
+                Err(error) => {
+                    warn!(device = %id.web_id(), %error, "screenshot stream stopped");
+                    None
+                }
+            }
+        },
+    );
+
+    Ok((
+        [
+            (
+                header::CONTENT_TYPE,
+                format!("multipart/x-mixed-replace; boundary={boundary}"),
+            ),
+            (header::CACHE_CONTROL, "no-store".to_string()),
+        ],
+        Body::from_stream(body_stream),
+    )
+        .into_response())
+}
+
+fn encode_stream_frame(
+    bytes: &[u8],
+    max_width: u32,
+    quality: u8,
+) -> Result<(&'static str, Vec<u8>), image::ImageError> {
+    let image = image::load_from_memory(bytes)?;
+    let (width, height) = image.dimensions();
+    let output = if width > max_width {
+        let scaled_height = ((u64::from(height) * u64::from(max_width)) / u64::from(width))
+            .max(1)
+            .min(u64::from(u32::MAX)) as u32;
+        image.resize(max_width, scaled_height, FilterType::Triangle)
+    } else {
+        image
+    };
+
+    let mut encoded = Vec::new();
+    let mut encoder = JpegEncoder::new_with_quality(&mut encoded, quality);
+    encoder.encode_image(&output)?;
+    Ok(("image/jpeg", encoded))
 }
 
 async fn tap<R: ProcessRunner + Clone>(
@@ -169,20 +274,197 @@ async fn record_stop<R: ProcessRunner + Clone>(
 }
 
 async fn ws_handler<R: ProcessRunner + Clone>(
-    State(_state): State<AppState<R>>,
+    State(state): State<AppState<R>>,
     ws: WebSocketUpgrade,
 ) -> Result<Response, ApiError> {
-    Ok(ws.on_upgrade(handle_socket))
+    Ok(ws.on_upgrade(move |socket| handle_socket(socket, state)))
 }
 
-async fn handle_socket(mut socket: WebSocket) {
+async fn handle_socket<R: ProcessRunner + Clone>(mut socket: WebSocket, state: AppState<R>) {
     let _ = socket
         .send(Message::Text("Appmo WebSocket connected".to_string()))
         .await;
     while let Some(Ok(message)) = socket.recv().await {
-        if matches!(message, Message::Close(_)) {
-            break;
+        match message {
+            Message::Text(text) => {
+                let response = handle_ws_text(&state, &text).await;
+                if socket.send(Message::Text(response)).await.is_err() {
+                    break;
+                }
+            }
+            Message::Close(_) => break,
+            _ => {}
         }
+    }
+}
+
+async fn handle_ws_text<R: ProcessRunner + Clone>(state: &AppState<R>, text: &str) -> String {
+    let request = match serde_json::from_str::<ControlRequest>(text) {
+        Ok(request) => request,
+        Err(error) => {
+            return ControlResponse::error(None, format!("invalid control message: {error}"))
+                .to_json()
+        }
+    };
+    let request_id = Some(request.request_id.clone());
+    let result = execute_control(state, request).await;
+    match result {
+        Ok(()) => ControlResponse::ok(request_id).to_json(),
+        Err(error) => ControlResponse::error(request_id, error.0.to_string()).to_json(),
+    }
+}
+
+async fn execute_control<R: ProcessRunner + Clone>(
+    state: &AppState<R>,
+    request: ControlRequest,
+) -> Result<(), ApiError> {
+    let id = DeviceId::parse(&request.device_id)?;
+    match request.command {
+        ControlCommand::Tap { x, y } => state.controller.tap(&id, TapRequest { x, y }).await?,
+        ControlCommand::Swipe {
+            x1,
+            y1,
+            x2,
+            y2,
+            duration_ms,
+        } => {
+            state
+                .controller
+                .swipe(
+                    &id,
+                    SwipeRequest {
+                        x1,
+                        y1,
+                        x2,
+                        y2,
+                        duration_ms,
+                    },
+                )
+                .await?
+        }
+        ControlCommand::Key { key } => state.controller.key(&id, KeyRequest { key }).await?,
+        ControlCommand::Text { text } => state.controller.text(&id, TextRequest { text }).await?,
+    }
+    Ok(())
+}
+
+pub async fn run_udp_control<R: ProcessRunner + Clone>(
+    controller: DeviceManager<R>,
+    bind: SocketAddr,
+) -> std::io::Result<()> {
+    let socket = UdpSocket::bind(bind).await?;
+    info!(%bind, "appmo udp control listening");
+    let state = AppState { controller };
+    let mut buffer = vec![0_u8; 65_507];
+
+    loop {
+        let (len, peer) = socket.recv_from(&mut buffer).await?;
+        let text = match std::str::from_utf8(&buffer[..len]) {
+            Ok(text) => text,
+            Err(error) => {
+                let response =
+                    ControlResponse::error(None, format!("invalid utf-8 datagram: {error}"))
+                        .to_json();
+                let _ = socket.send_to(response.as_bytes(), peer).await;
+                continue;
+            }
+        };
+        let response = handle_udp_text(&state, text, peer).await;
+        if let Err(error) = socket.send_to(response.as_bytes(), peer).await {
+            warn!(%peer, %error, "failed to send udp control response");
+        }
+    }
+}
+
+async fn handle_udp_text<R: ProcessRunner + Clone>(
+    state: &AppState<R>,
+    text: &str,
+    peer: SocketAddr,
+) -> String {
+    let request = match serde_json::from_str::<ControlRequest>(text) {
+        Ok(request) => request,
+        Err(error) => {
+            return ControlResponse::error(None, format!("invalid control datagram: {error}"))
+                .to_json()
+        }
+    };
+    let request_id = Some(request.request_id.clone());
+    let result = execute_control(state, request).await;
+    match result {
+        Ok(()) => {
+            info!(%peer, "udp control command completed");
+            ControlResponse::ok(request_id).to_json()
+        }
+        Err(error) => {
+            error!(%peer, error = %error.0, "udp control command failed");
+            ControlResponse::error(request_id, error.0.to_string()).to_json()
+        }
+    }
+}
+
+#[derive(Debug, Deserialize)]
+struct ControlRequest {
+    request_id: String,
+    device_id: String,
+    #[serde(flatten)]
+    command: ControlCommand,
+}
+
+#[derive(Debug, Deserialize)]
+#[serde(tag = "type", rename_all = "snake_case")]
+enum ControlCommand {
+    Tap {
+        x: u32,
+        y: u32,
+    },
+    Swipe {
+        x1: u32,
+        y1: u32,
+        x2: u32,
+        y2: u32,
+        duration_ms: Option<u32>,
+    },
+    Key {
+        key: String,
+    },
+    Text {
+        text: String,
+    },
+}
+
+#[derive(Debug, Serialize)]
+struct ControlResponse {
+    #[serde(rename = "type")]
+    kind: &'static str,
+    request_id: Option<String>,
+    ok: bool,
+    error: Option<String>,
+}
+
+impl ControlResponse {
+    fn ok(request_id: Option<String>) -> Self {
+        Self {
+            kind: "control_result",
+            request_id,
+            ok: true,
+            error: None,
+        }
+    }
+
+    fn error(request_id: Option<String>, error: String) -> Self {
+        Self {
+            kind: "control_result",
+            request_id,
+            ok: false,
+            error: Some(error),
+        }
+    }
+
+    fn to_json(&self) -> String {
+        serde_json::to_string(self).unwrap_or_else(|_| {
+            r#"{"type":"control_result","request_id":null,"ok":false,"error":"serialization failed"}"#
+                .to_string()
+        })
     }
 }
 
@@ -275,6 +557,7 @@ mod tests {
     fn test_router() -> Router {
         let config = AppConfig {
             bind: "127.0.0.1:0".parse().unwrap(),
+            udp_bind: None,
             adb_path: "/bin/echo".into(),
             xcrun_path: "/bin/echo".into(),
         };

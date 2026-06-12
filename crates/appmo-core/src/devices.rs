@@ -2,7 +2,11 @@ use std::{collections::HashMap, path::PathBuf, process::Stdio, sync::Arc, time::
 
 use serde::{Deserialize, Serialize};
 use tempfile::NamedTempFile;
-use tokio::{process::Command, sync::Mutex};
+use tokio::{
+    io::AsyncWriteExt,
+    process::{ChildStdin, Command},
+    sync::Mutex,
+};
 use tracing::info;
 use uuid::Uuid;
 
@@ -116,6 +120,7 @@ pub struct DeviceManager<R: ProcessRunner = TokioProcessRunner> {
     config: AppConfig,
     runner: Arc<R>,
     recordings: Arc<Mutex<HashMap<String, RecordingJob>>>,
+    android_inputs: Arc<Mutex<HashMap<String, AndroidInputSession>>>,
 }
 
 pub type AppController = DeviceManager<TokioProcessRunner>;
@@ -132,6 +137,7 @@ impl<R: ProcessRunner> DeviceManager<R> {
             config,
             runner: Arc::new(runner),
             recordings: Arc::new(Mutex::new(HashMap::new())),
+            android_inputs: Arc::new(Mutex::new(HashMap::new())),
         }
     }
 
@@ -179,17 +185,12 @@ impl<R: ProcessRunner> DeviceManager<R> {
         validation::coordinate(req.y, "y")?;
         match id.kind {
             DeviceKind::Android => {
-                let args = vec![
-                    "-s".to_string(),
-                    id.raw.clone(),
-                    "shell".to_string(),
-                    "input".to_string(),
-                    "tap".to_string(),
-                    req.x.to_string(),
-                    req.y.to_string(),
-                ];
-                self.run_logged("android_tap", &self.config.adb_path, &args)
-                    .await?;
+                self.run_android_input(
+                    id,
+                    format!("input tap {} {}", req.x, req.y),
+                    "android_tap_fast",
+                )
+                .await?;
             }
             DeviceKind::Ios => {
                 let args = vec![
@@ -218,20 +219,15 @@ impl<R: ProcessRunner> DeviceManager<R> {
         let duration = req.duration_ms.unwrap_or(300).min(60_000);
         match id.kind {
             DeviceKind::Android => {
-                let args = vec![
-                    "-s".to_string(),
-                    id.raw.clone(),
-                    "shell".to_string(),
-                    "input".to_string(),
-                    "swipe".to_string(),
-                    req.x1.to_string(),
-                    req.y1.to_string(),
-                    req.x2.to_string(),
-                    req.y2.to_string(),
-                    duration.to_string(),
-                ];
-                self.run_logged("android_swipe", &self.config.adb_path, &args)
-                    .await?;
+                self.run_android_input(
+                    id,
+                    format!(
+                        "input swipe {} {} {} {} {}",
+                        req.x1, req.y1, req.x2, req.y2, duration
+                    ),
+                    "android_swipe_fast",
+                )
+                .await?;
             }
             DeviceKind::Ios => {
                 let args = vec![
@@ -256,16 +252,12 @@ impl<R: ProcessRunner> DeviceManager<R> {
         match id.kind {
             DeviceKind::Android => {
                 let escaped = req.text.replace(' ', "%s");
-                let args = vec![
-                    "-s".to_string(),
-                    id.raw.clone(),
-                    "shell".to_string(),
-                    "input".to_string(),
-                    "text".to_string(),
-                    escaped,
-                ];
-                self.run_logged("android_text", &self.config.adb_path, &args)
-                    .await?;
+                self.run_android_input(
+                    id,
+                    format!("input text {}", shell_quote(&escaped)),
+                    "android_text_fast",
+                )
+                .await?;
             }
             DeviceKind::Ios => {
                 return Err(AppError::UnsupportedCapability(
@@ -277,19 +269,15 @@ impl<R: ProcessRunner> DeviceManager<R> {
     }
 
     pub async fn key(&self, id: &DeviceId, req: KeyRequest) -> AppResult<()> {
-        validation::non_empty(&req.key, "key")?;
+        validation::key_input(&req.key)?;
         match id.kind {
             DeviceKind::Android => {
-                let args = vec![
-                    "-s".to_string(),
-                    id.raw.clone(),
-                    "shell".to_string(),
-                    "input".to_string(),
-                    "keyevent".to_string(),
-                    req.key,
-                ];
-                self.run_logged("android_key", &self.config.adb_path, &args)
-                    .await?;
+                self.run_android_input(
+                    id,
+                    format!("input keyevent {}", shell_quote(&req.key)),
+                    "android_key_fast",
+                )
+                .await?;
             }
             DeviceKind::Ios => {
                 let args = vec![
@@ -527,6 +515,45 @@ impl<R: ProcessRunner> DeviceManager<R> {
         }
     }
 
+    async fn run_android_input(
+        &self,
+        id: &DeviceId,
+        command: String,
+        op: &'static str,
+    ) -> AppResult<()> {
+        let start = Instant::now();
+        let write_result = self.write_android_input(id, &command).await;
+        let result = match write_result {
+            Ok(()) => Ok(()),
+            Err(error) => {
+                self.android_inputs.lock().await.remove(&id.raw);
+                Err(error)
+            }
+        };
+        info!(
+            op,
+            device = %id.raw,
+            duration_ms = start.elapsed().as_millis(),
+            success = result.is_ok(),
+            "android input command queued"
+        );
+        result
+    }
+
+    async fn write_android_input(&self, id: &DeviceId, command: &str) -> AppResult<()> {
+        let mut inputs = self.android_inputs.lock().await;
+        if !inputs.contains_key(&id.raw) {
+            inputs.insert(
+                id.raw.clone(),
+                AndroidInputSession::spawn(&self.config.adb_path, &id.raw)?,
+            );
+        }
+        let session = inputs
+            .get_mut(&id.raw)
+            .expect("android input session is inserted before use");
+        session.write_command(command).await
+    }
+
     async fn run_logged(
         &self,
         op: &'static str,
@@ -554,6 +581,45 @@ struct RecordingJob {
     child: tokio::process::Child,
 }
 
+struct AndroidInputSession {
+    stdin: ChildStdin,
+    child: tokio::process::Child,
+}
+
+impl AndroidInputSession {
+    fn spawn(program: &std::path::Path, serial: &str) -> AppResult<Self> {
+        if !program.exists() {
+            return Err(AppError::ToolMissing(program.display().to_string()));
+        }
+        let mut child = Command::new(program)
+            .args(["-s", serial, "shell"])
+            .stdin(Stdio::piped())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null())
+            .spawn()?;
+        let stdin = child
+            .stdin
+            .take()
+            .ok_or_else(|| AppError::InvalidInput("failed to open adb shell stdin".to_string()))?;
+        Ok(Self { stdin, child })
+    }
+
+    async fn write_command(&mut self, command: &str) -> AppResult<()> {
+        if let Some(status) = self.child.try_wait()? {
+            return Err(AppError::CommandFailed {
+                program: "adb".to_string(),
+                args: vec!["shell".to_string()],
+                status: status.code(),
+                stderr: "persistent adb shell exited".to_string(),
+            });
+        }
+        self.stdin.write_all(command.as_bytes()).await?;
+        self.stdin.write_all(b"\n").await?;
+        self.stdin.flush().await?;
+        Ok(())
+    }
+}
+
 fn spawn_recording(program: &std::path::Path, args: &[String]) -> AppResult<tokio::process::Child> {
     if !program.exists() {
         return Err(AppError::ToolMissing(program.display().to_string()));
@@ -564,6 +630,16 @@ fn spawn_recording(program: &std::path::Path, args: &[String]) -> AppResult<toki
         .stdout(Stdio::null())
         .stderr(Stdio::piped())
         .spawn()?)
+}
+
+fn shell_quote(value: &str) -> String {
+    if value
+        .chars()
+        .all(|c| c.is_ascii_alphanumeric() || matches!(c, '_' | '-' | '.' | '%' | ':' | '/' | ','))
+    {
+        return value.to_string();
+    }
+    format!("'{}'", value.replace('\'', "'\\''"))
 }
 
 pub fn parse_adb_devices(input: &str) -> Vec<Device> {
@@ -681,5 +757,12 @@ mod tests {
         assert!(DeviceId::parse("android:emulator-5554").is_ok());
         assert!(DeviceId::parse("ios:abc").is_ok());
         assert!(DeviceId::parse("abc").is_err());
+    }
+
+    #[test]
+    fn quotes_shell_arguments_for_persistent_input() {
+        assert_eq!(shell_quote("BACK"), "BACK");
+        assert_eq!(shell_quote("hello%s"), "hello%s");
+        assert_eq!(shell_quote("can't"), "'can'\\''t'");
     }
 }

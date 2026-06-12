@@ -17,9 +17,26 @@ http://<mac-lan-ip>:8080
 
 The web UI and API are intentionally unauthenticated for local/LAN development.
 
+UDP control listens on the next port after `APPMO_BIND` by default. For example,
+`APPMO_BIND=127.0.0.1:18081` enables UDP control on `127.0.0.1:18082`.
+Override it with `APPMO_UDP_BIND=host:port`, or disable it with
+`APPMO_UDP_BIND=off`.
+
+```sh
+printf '{"request_id":"tap-1","device_id":"android:emulator-5554","type":"tap","x":320,"y":640}' \
+  | nc -u -w1 127.0.0.1 18082
+```
+
 ## Touch Control
 
 The device screen uses vendored `interact.js` 1.10.27 for unified mouse/touch
-tap and drag gesture handling. Android commands still use `adb` underneath; the
-deeper low-latency Android integration target is `scrcpy` or
-`@yume-chan/scrcpy`.
+tap and drag gesture handling. Control commands are sent over WebSocket when
+available, with REST as a compatibility fallback. Android input keeps a
+persistent `adb shell` session per device and writes `input ...` commands into
+that session, avoiding a new `adb` process for every tap/swipe/key event.
+
+Screen preview defaults to the conservative one-shot screenshot path with a
+1-second refresh interval because it leaves more room for control commands. An
+experimental Rust-served multipart stream is available from the UI; use
+`format=png` for low CPU overhead, or `format=jpeg` with `max_width` and
+`quality` when bandwidth is the bottleneck.
