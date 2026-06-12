@@ -18,21 +18,40 @@ use futures_util::stream;
 use image::{codecs::jpeg::JpegEncoder, imageops::FilterType, GenericImageView};
 use serde::{Deserialize, Serialize};
 use std::{
+    collections::HashMap,
     convert::Infallible,
     net::SocketAddr,
+    sync::Arc,
     time::{Duration, Instant},
 };
-use tokio::net::UdpSocket;
+use tokio::{net::UdpSocket, sync::Mutex};
 use tower_http::trace::TraceLayer;
 use tracing::{error, info, warn};
+use uuid::Uuid;
+use webrtc::{
+    api::{
+        interceptor_registry::register_default_interceptors, media_engine::MediaEngine, APIBuilder,
+    },
+    data_channel::{data_channel_state::RTCDataChannelState, RTCDataChannel},
+    ice_transport::ice_server::RTCIceServer,
+    interceptor::registry::Registry,
+    peer_connection::{
+        configuration::RTCConfiguration, peer_connection_state::RTCPeerConnectionState,
+        sdp::session_description::RTCSessionDescription, RTCPeerConnection,
+    },
+};
 
 #[derive(Clone)]
 pub struct AppState<R: ProcessRunner + Clone> {
     controller: DeviceManager<R>,
+    webrtc_sessions: Arc<Mutex<HashMap<Uuid, Arc<RTCPeerConnection>>>>,
 }
 
 pub fn build_router<R: ProcessRunner + Clone>(controller: DeviceManager<R>) -> Router {
-    let state = AppState { controller };
+    let state = AppState {
+        controller,
+        webrtc_sessions: Arc::new(Mutex::new(HashMap::new())),
+    };
     let api = Router::new()
         .route("/devices", get(list_devices::<R>))
         .route("/devices/:id/screenshot", get(screenshot::<R>))
@@ -40,6 +59,7 @@ pub fn build_router<R: ProcessRunner + Clone>(controller: DeviceManager<R>) -> R
             "/devices/:id/screenshot-stream",
             get(screenshot_stream::<R>),
         )
+        .route("/devices/:id/webrtc/offer", post(webrtc_offer::<R>))
         .route("/devices/:id/input/tap", post(tap::<R>))
         .route("/devices/:id/input/swipe", post(swipe::<R>))
         .route("/devices/:id/input/text", post(text::<R>))
@@ -103,10 +123,7 @@ async fn screenshot_stream<R: ProcessRunner + Clone>(
 ) -> Result<Response, ApiError> {
     let id = DeviceId::parse(&id)?;
     let fps = req.fps.unwrap_or(8).clamp(1, 15);
-    let encode_jpeg = req
-        .format
-        .as_deref()
-        .is_some_and(|format| format.eq_ignore_ascii_case("jpeg"));
+    let stream_format = req.format.as_deref().unwrap_or("auto").to_ascii_lowercase();
     let max_width = req.max_width.unwrap_or(720).clamp(240, 4096);
     let quality = req.quality.unwrap_or(70).clamp(35, 95);
     let frame_delay = Duration::from_millis(1_000 / u64::from(fps));
@@ -114,38 +131,46 @@ async fn screenshot_stream<R: ProcessRunner + Clone>(
     let boundary = "appmo-frame";
     let body_stream = stream::unfold(
         (controller, id, None::<Instant>),
-        move |(controller, id, last_frame)| async move {
-            if let Some(last_frame) = last_frame {
-                let elapsed = last_frame.elapsed();
-                if elapsed < frame_delay {
-                    tokio::time::sleep(frame_delay - elapsed).await;
+        move |(controller, id, last_frame)| {
+            let stream_format = stream_format.clone();
+            async move {
+                if let Some(last_frame) = last_frame {
+                    let elapsed = last_frame.elapsed();
+                    if elapsed < frame_delay {
+                        tokio::time::sleep(frame_delay - elapsed).await;
+                    }
                 }
-            }
-            let frame_started = Instant::now();
-            match controller.screenshot(&id).await {
-                Ok(screenshot) => {
-                    let frame = if encode_jpeg {
-                        encode_stream_frame(&screenshot.bytes, max_width, quality)
-                            .unwrap_or_else(|_| (screenshot.content_type, screenshot.bytes))
-                    } else {
-                        (screenshot.content_type, screenshot.bytes)
-                    };
-                    let header = format!(
+                let frame_started = Instant::now();
+                match controller.screenshot(&id).await {
+                    Ok(screenshot) => {
+                        let encode_jpeg = match stream_format.as_str() {
+                            "jpeg" => true,
+                            "native" => false,
+                            _ => screenshot.content_type != "image/jpeg",
+                        };
+                        let frame = if encode_jpeg {
+                            encode_stream_frame(&screenshot.bytes, max_width, quality)
+                                .unwrap_or_else(|_| (screenshot.content_type, screenshot.bytes))
+                        } else {
+                            (screenshot.content_type, screenshot.bytes)
+                        };
+                        let header = format!(
                     "\r\n--{boundary}\r\nContent-Type: {}\r\nContent-Length: {}\r\nCache-Control: no-store\r\n\r\n",
                     frame.0,
                     frame.1.len()
                 );
-                    let mut payload = Vec::with_capacity(header.len() + frame.1.len());
-                    payload.extend_from_slice(header.as_bytes());
-                    payload.extend_from_slice(&frame.1);
-                    Some((
-                        Ok::<Bytes, Infallible>(Bytes::from(payload)),
-                        (controller, id, Some(frame_started)),
-                    ))
-                }
-                Err(error) => {
-                    warn!(device = %id.web_id(), %error, "screenshot stream stopped");
-                    None
+                        let mut payload = Vec::with_capacity(header.len() + frame.1.len());
+                        payload.extend_from_slice(header.as_bytes());
+                        payload.extend_from_slice(&frame.1);
+                        Some((
+                            Ok::<Bytes, Infallible>(Bytes::from(payload)),
+                            (controller, id, Some(frame_started)),
+                        ))
+                    }
+                    Err(error) => {
+                        warn!(device = %id.web_id(), %error, "screenshot stream stopped");
+                        None
+                    }
                 }
             }
         },
@@ -184,6 +209,245 @@ fn encode_stream_frame(
     let mut encoder = JpegEncoder::new_with_quality(&mut encoded, quality);
     encoder.encode_image(&output)?;
     Ok(("image/jpeg", encoded))
+}
+
+#[derive(Debug, Deserialize)]
+struct WebRtcOfferRequest {
+    offer: RTCSessionDescription,
+    fps: Option<u32>,
+    format: Option<String>,
+    max_width: Option<u32>,
+    quality: Option<u8>,
+}
+
+#[derive(Debug, Serialize)]
+struct WebRtcOfferResponse {
+    session_id: Uuid,
+    answer: RTCSessionDescription,
+}
+
+async fn webrtc_offer<R: ProcessRunner + Clone>(
+    State(state): State<AppState<R>>,
+    Path(id): Path<String>,
+    Json(req): Json<WebRtcOfferRequest>,
+) -> Result<Json<WebRtcOfferResponse>, ApiError> {
+    let id = DeviceId::parse(&id)?;
+    let fps = req.fps.unwrap_or(12).clamp(1, 20);
+    let stream_format = req
+        .format
+        .unwrap_or_else(|| "auto".to_string())
+        .to_ascii_lowercase();
+    let max_width = req.max_width.unwrap_or(720).clamp(240, 4096);
+    let quality = req.quality.unwrap_or(70).clamp(35, 95);
+    let session_id = Uuid::new_v4();
+
+    let mut media_engine = MediaEngine::default();
+    media_engine
+        .register_default_codecs()
+        .map_err(webrtc_api_error)?;
+    let registry = register_default_interceptors(Registry::new(), &mut media_engine)
+        .map_err(webrtc_api_error)?;
+    let api = APIBuilder::new()
+        .with_media_engine(media_engine)
+        .with_interceptor_registry(registry)
+        .build();
+    let peer_connection = Arc::new(
+        api.new_peer_connection(RTCConfiguration {
+            ice_servers: vec![RTCIceServer {
+                urls: vec!["stun:stun.l.google.com:19302".to_string()],
+                ..Default::default()
+            }],
+            ..Default::default()
+        })
+        .await
+        .map_err(webrtc_api_error)?,
+    );
+
+    let controller = state.controller.clone();
+    let peer_for_channel = Arc::clone(&peer_connection);
+    peer_connection.on_data_channel(Box::new(move |data_channel| {
+        let controller = controller.clone();
+        let id = id.clone();
+        let peer_connection = Arc::clone(&peer_for_channel);
+        let stream_format = stream_format.clone();
+        Box::pin(async move {
+            if data_channel.label() == "appmo-preview" {
+                tokio::spawn(send_webrtc_preview(
+                    controller,
+                    id,
+                    data_channel,
+                    peer_connection,
+                    WebRtcStreamSettings {
+                        fps,
+                        stream_format,
+                        max_width,
+                        quality,
+                    },
+                ));
+            }
+        })
+    }));
+
+    let sessions = Arc::clone(&state.webrtc_sessions);
+    peer_connection.on_peer_connection_state_change(Box::new(move |connection_state| {
+        let sessions = Arc::clone(&sessions);
+        Box::pin(async move {
+            if matches!(
+                connection_state,
+                RTCPeerConnectionState::Failed
+                    | RTCPeerConnectionState::Closed
+                    | RTCPeerConnectionState::Disconnected
+            ) {
+                sessions.lock().await.remove(&session_id);
+            }
+        })
+    }));
+
+    let mut gather_complete = peer_connection.gathering_complete_promise().await;
+    peer_connection
+        .set_remote_description(req.offer)
+        .await
+        .map_err(webrtc_api_error)?;
+    let answer = peer_connection
+        .create_answer(None)
+        .await
+        .map_err(webrtc_api_error)?;
+    peer_connection
+        .set_local_description(answer)
+        .await
+        .map_err(webrtc_api_error)?;
+    let _ = gather_complete.recv().await;
+    let answer = peer_connection.local_description().await.ok_or_else(|| {
+        ApiError(AppError::InvalidInput(
+            "WebRTC answer was not created".into(),
+        ))
+    })?;
+
+    state
+        .webrtc_sessions
+        .lock()
+        .await
+        .insert(session_id, peer_connection);
+
+    Ok(Json(WebRtcOfferResponse { session_id, answer }))
+}
+
+#[derive(Clone)]
+struct WebRtcStreamSettings {
+    fps: u32,
+    stream_format: String,
+    max_width: u32,
+    quality: u8,
+}
+
+async fn send_webrtc_preview<R: ProcessRunner + Clone>(
+    controller: DeviceManager<R>,
+    id: DeviceId,
+    data_channel: Arc<RTCDataChannel>,
+    peer_connection: Arc<RTCPeerConnection>,
+    settings: WebRtcStreamSettings,
+) {
+    let frame_delay = Duration::from_millis(1_000 / u64::from(settings.fps));
+    let mut frame_seq = 0_u32;
+
+    loop {
+        if data_channel.ready_state() == RTCDataChannelState::Open {
+            break;
+        }
+        if matches!(
+            data_channel.ready_state(),
+            RTCDataChannelState::Closing | RTCDataChannelState::Closed
+        ) {
+            return;
+        }
+        tokio::time::sleep(Duration::from_millis(20)).await;
+    }
+
+    loop {
+        let frame_started = Instant::now();
+        if matches!(
+            data_channel.ready_state(),
+            RTCDataChannelState::Closing | RTCDataChannelState::Closed
+        ) {
+            break;
+        }
+
+        match controller.screenshot(&id).await {
+            Ok(screenshot) => {
+                let encode_jpeg = match settings.stream_format.as_str() {
+                    "jpeg" => true,
+                    "native" => false,
+                    _ => screenshot.content_type != "image/jpeg",
+                };
+                let frame = if encode_jpeg {
+                    encode_stream_frame(&screenshot.bytes, settings.max_width, settings.quality)
+                        .unwrap_or_else(|_| (screenshot.content_type, screenshot.bytes))
+                } else {
+                    (screenshot.content_type, screenshot.bytes)
+                };
+
+                frame_seq = frame_seq.wrapping_add(1);
+                if let Err(error) =
+                    send_webrtc_frame(&data_channel, frame_seq, frame.0, &frame.1).await
+                {
+                    warn!(device = %id.web_id(), %error, "WebRTC preview send failed");
+                    break;
+                }
+            }
+            Err(error) => {
+                warn!(device = %id.web_id(), %error, "WebRTC preview stopped");
+                break;
+            }
+        }
+
+        let elapsed = frame_started.elapsed();
+        if elapsed < frame_delay {
+            tokio::time::sleep(frame_delay - elapsed).await;
+        }
+    }
+
+    let _ = peer_connection.close().await;
+}
+
+async fn send_webrtc_frame(
+    data_channel: &RTCDataChannel,
+    frame_seq: u32,
+    content_type: &str,
+    frame: &[u8],
+) -> Result<(), webrtc::Error> {
+    const CHUNK_SIZE: usize = 12 * 1024;
+    let content_type = content_type.as_bytes();
+    let mut offset = 0_usize;
+    while offset < frame.len() {
+        while data_channel.buffered_amount().await > 4 * 1024 * 1024 {
+            tokio::time::sleep(Duration::from_millis(8)).await;
+        }
+
+        let end = (offset + CHUNK_SIZE).min(frame.len());
+        let first = offset == 0;
+        let last = end == frame.len();
+        let content_type_len = if first {
+            content_type.len().min(u8::MAX as usize)
+        } else {
+            0
+        };
+        let mut packet = Vec::with_capacity(10 + content_type_len + (end - offset));
+        packet.extend_from_slice(&frame_seq.to_be_bytes());
+        packet.push((if first { 1 } else { 0 }) | (if last { 2 } else { 0 }));
+        packet.push(content_type_len as u8);
+        packet.extend_from_slice(&(frame.len() as u32).to_be_bytes());
+        packet.extend_from_slice(&content_type[..content_type_len]);
+        packet.extend_from_slice(&frame[offset..end]);
+        data_channel.send(&Bytes::from(packet)).await?;
+        offset = end;
+    }
+    Ok(())
+}
+
+fn webrtc_api_error(error: webrtc::Error) -> ApiError {
+    ApiError(AppError::InvalidInput(format!(
+        "WebRTC negotiation failed: {error}"
+    )))
 }
 
 async fn tap<R: ProcessRunner + Clone>(
@@ -388,7 +652,10 @@ pub async fn run_udp_control<R: ProcessRunner + Clone>(
 ) -> std::io::Result<()> {
     let socket = UdpSocket::bind(bind).await?;
     info!(%bind, "appmo udp control listening");
-    let state = AppState { controller };
+    let state = AppState {
+        controller,
+        webrtc_sessions: Arc::new(Mutex::new(HashMap::new())),
+    };
     let mut buffer = vec![0_u8; 65_507];
 
     loop {

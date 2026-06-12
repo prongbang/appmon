@@ -35,9 +35,18 @@ pub fn dashboard_html() -> String {
 #[component]
 fn App() -> Element {
     rsx! {
-        div { class: "min-h-screen bg-coral text-slate-950",
-            main { class: "grid min-h-screen grid-cols-app bg-white/95",
-                DevicesPane {}
+        div { class: "min-h-screen app-shell text-slate-950",
+            main { class: "app-layout",
+                div { class: "workspace-rail",
+                    div { class: "brand-lockup",
+                        div { class: "brand-mark", "A" }
+                        div {
+                            h1 { class: "brand-title", "Appmo" }
+                            p { class: "brand-subtitle", "Device control console" }
+                        }
+                    }
+                    DevicesPane {}
+                }
                 MonitorPane {}
                 AppControls {}
             }
@@ -48,12 +57,17 @@ fn App() -> Element {
 #[component]
 fn DevicesPane() -> Element {
     rsx! {
-        aside { class: "border-r border-slate-200 bg-white/90 p-5",
-            div { class: "mb-5 flex items-center justify-between gap-3",
-                h2 { class: "text-base font-bold", "Devices" }
-                button { id: "refresh", class: "btn btn-secondary", "Refresh" }
+        aside { class: "devices-pane panel-section",
+            div { class: "section-head",
+                div {
+                    h2 { class: "section-title", "Devices" }
+                    p { class: "section-kicker", "Android and iOS targets" }
+                }
+                button { id: "refresh", class: "icon-btn", title: "Refresh devices", aria_label: "Refresh devices",
+                    span { class: "refresh-icon" }
+                }
             }
-            div { id: "devices", class: "grid gap-3" }
+            div { id: "devices", class: "device-list" }
         }
     }
 }
@@ -61,11 +75,54 @@ fn DevicesPane() -> Element {
 #[component]
 fn MonitorPane() -> Element {
     rsx! {
-        section { class: "overflow-auto bg-slate-50 p-6",
-            div { class: "mb-5 flex justify-end",
-                div { class: "flex flex-wrap items-center gap-2",
+        section { class: "monitor-pane",
+            div { class: "monitor-card",
+                div { class: "monitor-toolbar",
+                    div {
+                        h2 { class: "monitor-title", "Monitor" }
+                        span { id: "selectedMeta", class: "text-xs text-slate-500", "Select a device to begin" }
+                    }
+                    div { class: "toolbar-actions",
+                        span { id: "statusChip", class: "status-pill", "Idle" }
+                        button { id: "fullscreenToggle", class: "icon-btn", title: "Enter fullscreen", aria_label: "Enter fullscreen",
+                            span { class: "fullscreen-icon" }
+                        }
+                        button { id: "settingsOpen", class: "btn btn-secondary", "Preview" }
+                    }
+                }
+                div { id: "screenWrap", class: "screen-wrap",
+                    img { id: "screen", alt: "Device screenshot" }
+                    div { id: "screenEmpty", class: "empty-screen", "Select a device" }
+                }
+                DeviceNav {}
+                p { id: "status", class: "mt-3 min-h-5 text-xs text-slate-700" }
+            }
+
+            PreviewSettingsModal {}
+
+            LogsPanel {}
+        }
+    }
+}
+
+#[component]
+fn PreviewSettingsModal() -> Element {
+    rsx! {
+        div { id: "settingsModal", class: "settings-modal", aria_hidden: "true",
+            div { class: "settings-dialog", role: "dialog", aria_modal: "true", aria_labelledby: "settingsTitle",
+                div { class: "section-head compact",
+                    div {
+                        h2 { id: "settingsTitle", class: "section-title", "Preview Controls" }
+                        p { class: "section-kicker", "Stream, capture, and diagnostics" }
+                    }
+                    button { id: "settingsClose", class: "icon-btn", title: "Close", aria_label: "Close",
+                        span { class: "close-icon" }
+                    }
+                }
+                div { class: "settings-grid",
                     select { id: "viewMode", title: "Preview mode", aria_label: "Preview mode",
                         option { value: "poll", selected: true, "Polling" }
+                        option { value: "webrtc", "WebRTC" }
                         option { value: "stream", "Stream" }
                     }
                     select { id: "pollFps", title: "Polling FPS", aria_label: "Polling FPS",
@@ -82,7 +139,8 @@ fn MonitorPane() -> Element {
                         option { value: "15", "15 fps" }
                     }
                     select { id: "streamFormat", title: "Stream format", aria_label: "Stream format",
-                        option { value: "native", selected: true, "Fast native" }
+                        option { value: "auto", selected: true, "Auto smooth" }
+                        option { value: "native", "Fast native" }
                         option { value: "jpeg", "Small JPEG" }
                     }
                     select { id: "streamScale", title: "Stream scale", aria_label: "Stream scale",
@@ -96,30 +154,14 @@ fn MonitorPane() -> Element {
                         option { value: "70", selected: true, "Balanced" }
                         option { value: "85", "Sharp" }
                     }
+                }
+                div { class: "settings-actions",
                     button { id: "shot", class: "btn btn-secondary", "Screenshot" }
                     button { id: "logsBtn", class: "btn btn-secondary", "Logs" }
                     button { id: "recordStart", class: "btn btn-secondary", "Record" }
                     button { id: "recordStop", class: "btn btn-danger", "Stop" }
                 }
             }
-
-            div { class: "card p-5",
-                div { class: "mb-4 flex items-center justify-between gap-3",
-                    div {
-                        h1 { class: "text-2xl font-extrabold", "Monitor" }
-                        span { id: "selectedMeta", class: "text-xs text-slate-500", "Select a device to begin" }
-                    }
-                    span { id: "statusChip", class: "status-pill", "Idle" }
-                }
-                div { id: "screenWrap", class: "screen-wrap",
-                    img { id: "screen", alt: "Device screenshot" }
-                    div { id: "screenEmpty", class: "empty-screen", "Select a device" }
-                }
-                DeviceNav {}
-                p { id: "status", class: "mt-3 min-h-5 text-xs text-slate-700" }
-            }
-
-            LogsPanel {}
         }
     }
 }
@@ -127,7 +169,7 @@ fn MonitorPane() -> Element {
 #[component]
 fn DeviceNav() -> Element {
     rsx! {
-        nav { class: "device-nav", aria_label: "Device navigation",
+        nav { id: "deviceNav", class: "device-nav", aria_label: "Device navigation", "data-platform": "none",
             button { id: "navBack", title: "Back", aria_label: "Back",
                 span { class: "nav-back" }
             }
@@ -144,10 +186,12 @@ fn DeviceNav() -> Element {
 #[component]
 fn LogsPanel() -> Element {
     rsx! {
-        div { class: "card mt-5 p-5",
-            div { class: "mb-4 flex items-center justify-between gap-3",
-                h2 { class: "text-base font-bold", "Logs" }
-                span { class: "text-xs text-slate-500", "Last 300 lines" }
+        div { class: "logs-panel",
+            div { class: "section-head compact",
+                div {
+                    h2 { class: "section-title", "Logs" }
+                    p { class: "section-kicker", "Last 300 lines" }
+                }
             }
             pre { id: "logs" }
         }
@@ -157,17 +201,20 @@ fn LogsPanel() -> Element {
 #[component]
 fn AppControls() -> Element {
     rsx! {
-        aside { class: "border-l border-slate-200 bg-white/90 p-5",
-            div { class: "grid gap-3",
-                div { class: "field-band",
-                    h3 { class: "text-xs font-bold text-slate-700", "App" }
-                    input { id: "appId", placeholder: "Package or bundle id" }
-                    input { id: "appPath", placeholder: "/path/to .apk or .app" }
-                    div { class: "grid grid-cols-3 gap-2",
-                        button { id: "install", class: "btn btn-secondary", "Install" }
-                        button { id: "launch", class: "btn btn-secondary", "Launch" }
-                        button { id: "terminate", class: "btn btn-secondary", "Stop" }
-                    }
+        aside { class: "app-controls panel-section",
+            div { class: "section-head",
+                div {
+                    h2 { class: "section-title", "App" }
+                    p { class: "section-kicker", "Install and launch" }
+                }
+            }
+            div { class: "field-band",
+                input { id: "appId", placeholder: "Package or bundle id" }
+                input { id: "appPath", placeholder: "/path/to .apk or .app" }
+                div { class: "action-grid",
+                    button { id: "install", class: "btn btn-secondary", "Install" }
+                    button { id: "launch", class: "btn", "Launch" }
+                    button { id: "terminate", class: "btn btn-secondary", "Stop" }
                 }
             }
         }
@@ -180,25 +227,31 @@ const TAILWIND_THEME_CSS: &str = r#"
   --tw-slate-50: #f8fafc;
   --tw-slate-100: #f1f5f9;
   --tw-slate-200: #e2e8f0;
+  --tw-slate-300: #cbd5e1;
   --tw-slate-500: #64748b;
   --tw-slate-700: #334155;
   --tw-slate-900: #0f172a;
   --tw-slate-950: #020617;
-  --tw-coral-50: #fff1ed;
-  --tw-coral-100: #ffe0d8;
-  --tw-coral-500: #f85f52;
-  --tw-coral-600: #e84b40;
+  --tw-coral-50: #fff4f1;
+  --tw-coral-100: #ffe2dc;
+  --tw-coral-500: #f05d4f;
+  --tw-coral-600: #d94b3f;
+  --tw-teal-500: #15a6a3;
+  --tw-amber-400: #f5b84b;
   --tw-white: #ffffff;
-  --theme-line: rgba(226, 232, 240, .88);
-  --theme-ring: rgba(248, 95, 82, .28);
+  --theme-line: rgba(203, 213, 225, .82);
+  --theme-soft-line: rgba(226, 232, 240, .74);
+  --theme-ring: rgba(21, 166, 163, .24);
   --theme-radius: 8px;
+  --shadow-panel: 0 20px 48px rgba(15, 23, 42, .08);
+  --shadow-soft: 0 12px 28px rgba(15, 23, 42, .06);
 }
 * { box-sizing: border-box; }
 body {
   margin: 0;
   min-height: 100vh;
   font-family: ui-sans-serif, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-  background: var(--tw-slate-50);
+  background: #eef3f8;
   color: var(--tw-slate-950);
 }
 button, input, textarea, select { font: inherit; min-width: 0; }
@@ -207,32 +260,39 @@ input, textarea, select {
   width: 100%;
   border: 1px solid var(--theme-line);
   border-radius: var(--theme-radius);
-  padding: 10px 11px;
-  background: var(--tw-slate-50);
+  padding: 10px 12px;
+  background: var(--tw-white);
   color: var(--tw-slate-950);
+  box-shadow: inset 0 1px 0 rgba(255,255,255,.8);
+}
+input:focus, textarea:focus, select:focus, button:focus-visible {
+  outline: 3px solid var(--theme-ring);
+  outline-offset: 1px;
 }
 select {
   width: auto;
-  min-width: 86px;
+  min-width: 104px;
   cursor: pointer;
+  min-height: 40px;
 }
 pre {
   margin: 0;
-  min-height: 150px;
-  max-height: 270px;
+  min-height: 144px;
+  max-height: 260px;
   overflow: auto;
   white-space: pre-wrap;
-  border: 1px solid var(--theme-line);
+  border: 1px solid rgba(15, 23, 42, .82);
   border-radius: var(--theme-radius);
   padding: 12px;
   background: var(--tw-slate-950);
   color: var(--tw-slate-100);
   font-size: 12px;
+  line-height: 1.55;
 }
 .min-h-screen { min-height: 100vh; }
 .min-h-5 { min-height: 1.25rem; }
 .grid { display: grid; }
-.grid-cols-app { grid-template-columns: 260px minmax(0, 1fr) 300px; }
+.grid-cols-app { grid-template-columns: 280px minmax(0, 1fr) 320px; }
 .grid-cols-3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
 .flex { display: flex; }
 .flex-wrap { flex-wrap: wrap; }
@@ -263,73 +323,351 @@ pre {
 .text-xs { font-size: .75rem; line-height: 1rem; }
 .font-bold { font-weight: 780; }
 .font-extrabold { font-weight: 850; }
-.card {
+
+.app-shell {
+  min-height: 100vh;
+  background:
+    linear-gradient(135deg, rgba(21, 166, 163, .12), transparent 34%),
+    linear-gradient(315deg, rgba(240, 93, 79, .12), transparent 38%),
+    #eef3f8;
+}
+.app-layout {
+  min-height: 100vh;
+  display: grid;
+  grid-template-columns: 292px minmax(0, 1fr) 320px;
+  gap: 14px;
+  padding: 14px;
+}
+.workspace-rail,
+.monitor-pane,
+.app-controls {
   border-radius: var(--theme-radius);
   background: var(--tw-white);
-  box-shadow: 0 16px 38px rgba(15, 23, 42, .05);
+  border: 1px solid var(--theme-soft-line);
+  box-shadow: var(--shadow-panel);
+}
+.workspace-rail {
+  min-height: calc(100vh - 28px);
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+}
+.brand-lockup {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 18px;
+  border-bottom: 1px solid var(--theme-soft-line);
+  background: linear-gradient(180deg, #ffffff, #f8fbfc);
+}
+.brand-mark {
+  width: 38px;
+  height: 38px;
+  border-radius: var(--theme-radius);
+  display: grid;
+  place-items: center;
+  color: #fff;
+  font-weight: 850;
+  background: linear-gradient(135deg, var(--tw-slate-950), var(--tw-teal-500));
+  box-shadow: 0 12px 24px rgba(15, 23, 42, .16);
+}
+.brand-title,
+.brand-subtitle,
+.section-title,
+.section-kicker {
+  margin: 0;
+}
+.brand-title {
+  font-size: 18px;
+  line-height: 1.15;
+  font-weight: 850;
+}
+.brand-subtitle,
+.section-kicker {
+  color: var(--tw-slate-500);
+  font-size: 12px;
+  line-height: 1.35;
+}
+.panel-section {
+  padding: 16px;
+}
+.devices-pane {
+  min-height: 0;
+  flex: 1;
+  overflow: auto;
+}
+.section-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 14px;
+}
+.section-head.compact { margin-bottom: 10px; }
+.section-title {
+  color: var(--tw-slate-950);
+  font-size: 15px;
+  line-height: 1.2;
+  font-weight: 820;
+}
+.icon-btn {
+  width: 38px;
+  height: 38px;
+  display: grid;
+  place-items: center;
   border: 1px solid var(--theme-line);
+  border-radius: var(--theme-radius);
+  background: var(--tw-white);
+  color: var(--tw-slate-700);
+  box-shadow: var(--shadow-soft);
+}
+.refresh-icon {
+  width: 16px;
+  height: 16px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 999px;
+  position: relative;
+}
+.refresh-icon::after {
+  content: "";
+  position: absolute;
+  right: -2px;
+  top: -5px;
+  width: 7px;
+  height: 7px;
+  border-top: 2px solid currentColor;
+  border-right: 2px solid currentColor;
+  transform: rotate(22deg);
+}
+.close-icon {
+  width: 16px;
+  height: 16px;
+  position: relative;
+}
+.close-icon::before,
+.close-icon::after {
+  content: "";
+  position: absolute;
+  left: 7px;
+  top: 1px;
+  width: 2px;
+  height: 14px;
+  border-radius: 999px;
+  background: currentColor;
+}
+.close-icon::before { transform: rotate(45deg); }
+.close-icon::after { transform: rotate(-45deg); }
+.fullscreen-icon {
+  width: 17px;
+  height: 17px;
+  position: relative;
+}
+.fullscreen-icon::before,
+.fullscreen-icon::after {
+  content: "";
+  position: absolute;
+  width: 7px;
+  height: 7px;
+  border-color: currentColor;
+  border-style: solid;
+}
+.fullscreen-icon::before {
+  top: 0;
+  left: 0;
+  border-width: 2px 0 0 2px;
+}
+.fullscreen-icon::after {
+  right: 0;
+  bottom: 0;
+  border-width: 0 2px 2px 0;
+}
+.screen-wrap:fullscreen,
+.screen-wrap:-webkit-full-screen {
+  width: 100vw;
+  height: 100vh;
+  border: 0;
+  border-radius: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: #090d14;
+}
+.screen-wrap:fullscreen #screen,
+.screen-wrap:-webkit-full-screen #screen {
+  max-width: 100%;
+  max-height: 100%;
+}
+.monitor-pane {
+  min-width: 0;
+  min-height: calc(100vh - 28px);
+  overflow: auto;
+  padding: 16px;
+  background: rgba(255, 255, 255, .74);
+  backdrop-filter: blur(18px);
+}
+.monitor-card,
+.logs-panel {
+  border-radius: var(--theme-radius);
+  background: var(--tw-white);
+  box-shadow: var(--shadow-panel);
+  border: 1px solid var(--theme-soft-line);
+}
+.monitor-card {
+  padding: 14px;
+}
+.monitor-toolbar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 14px;
+  margin-bottom: 12px;
+}
+.monitor-title {
+  margin: 0 0 2px;
+  font-size: 22px;
+  line-height: 1.18;
+  font-weight: 850;
+}
+.toolbar-actions {
+  display: flex;
+  align-items: center;
+  justify-content: flex-end;
+  gap: 8px;
+  flex-wrap: wrap;
+}
+.settings-modal {
+  position: fixed;
+  inset: 0;
+  z-index: 60;
+  display: none;
+  align-items: flex-start;
+  justify-content: flex-end;
+  padding: 22px;
+  background: rgba(15, 23, 42, .34);
+  backdrop-filter: blur(8px);
+}
+.settings-modal.open { display: flex; }
+.settings-dialog {
+  width: min(340px, calc(100vw - 44px));
+  max-height: calc(100vh - 44px);
+  overflow: auto;
+  border: 1px solid var(--theme-soft-line);
+  border-radius: var(--theme-radius);
+  background: rgba(248, 250, 252, .98);
+  box-shadow: 0 28px 70px rgba(15, 23, 42, .22);
+  padding: 16px;
+}
+.settings-grid {
+  display: grid;
+  gap: 10px;
+}
+.settings-grid select,
+.settings-actions .btn {
+  width: 100%;
+}
+.settings-actions {
+  display: grid;
+  gap: 10px;
+  margin-top: 14px;
+}
+.logs-panel {
+  margin-top: 14px;
+  padding: 14px;
 }
 .btn {
   border: 1px solid transparent;
   border-radius: var(--theme-radius);
-  padding: 10px 12px;
-  background: var(--tw-coral-500);
+  padding: 10px 13px;
+  min-height: 40px;
+  background: var(--tw-teal-500);
   color: var(--tw-white);
   font-weight: 760;
+  box-shadow: 0 10px 20px rgba(21, 166, 163, .18);
+  transition: transform .14s ease, border-color .14s ease, background .14s ease, box-shadow .14s ease;
+}
+.btn:hover,
+.icon-btn:hover,
+.device:hover { transform: translateY(-1px); }
+.icon-btn.active {
+  border-color: rgba(21, 166, 163, .58);
+  color: #0f766e;
+  background: #effdfb;
+}
+.icon-btn.active .fullscreen-icon::before {
+  top: 2px;
+  left: 2px;
+  border-width: 0 2px 2px 0;
+}
+.icon-btn.active .fullscreen-icon::after {
+  right: 2px;
+  bottom: 2px;
+  border-width: 2px 0 0 2px;
 }
 .btn-secondary {
   background: var(--tw-white);
   border-color: var(--theme-line);
   color: var(--tw-slate-900);
+  box-shadow: var(--shadow-soft);
 }
 .btn-danger {
-  background: var(--tw-slate-950);
-  border-color: var(--tw-slate-950);
+  background: var(--tw-coral-600);
+  border-color: var(--tw-coral-600);
   color: var(--tw-white);
+  box-shadow: 0 10px 20px rgba(217, 75, 63, .18);
 }
 .status-pill {
-  border: 1px solid var(--tw-coral-100);
+  border: 1px solid rgba(21, 166, 163, .22);
   border-radius: var(--theme-radius);
   padding: 7px 10px;
-  background: var(--tw-coral-50);
-  color: var(--tw-coral-600);
+  background: rgba(21, 166, 163, .08);
+  color: #0f766e;
   font-size: 12px;
   font-weight: 750;
   white-space: nowrap;
 }
+.device-list {
+  display: grid;
+  gap: 10px;
+}
 .device {
   width: 100%;
-  min-height: 88px;
+  min-height: 82px;
   text-align: left;
   color: var(--tw-slate-950);
   background: var(--tw-white);
-  border: 1px solid var(--theme-line);
+  border: 1px solid var(--theme-soft-line);
   border-radius: var(--theme-radius);
-  padding: 14px;
+  padding: 13px;
   display: grid;
-  gap: 6px;
-  box-shadow: 0 12px 28px rgba(15, 23, 42, .04);
+  gap: 5px;
+  box-shadow: var(--shadow-soft);
+  transition: transform .14s ease, border-color .14s ease, background .14s ease;
 }
 .device strong { font-size: 15px; }
 .device.active {
-  border-color: rgba(248, 95, 82, .58);
+  border-color: rgba(21, 166, 163, .58);
   outline: 3px solid var(--theme-ring);
-  background: var(--tw-coral-50);
+  background: #effdfb;
 }
 .muted { color: var(--tw-slate-500); font-size: 12px; overflow-wrap: anywhere; }
 .screen-wrap {
   display: grid;
   place-items: center;
-  min-height: 470px;
+  min-height: min(66vh, 620px);
   border-radius: var(--theme-radius) var(--theme-radius) 0 0;
-  background: var(--tw-slate-950);
+  background:
+    radial-gradient(circle at 50% 35%, rgba(148, 163, 184, .18), transparent 35%),
+    #090d14;
   overflow: hidden;
   touch-action: none;
   position: relative;
+  border: 1px solid rgba(15, 23, 42, .92);
+  border-bottom: 0;
 }
 #screen {
   max-width: 100%;
-  max-height: 72vh;
+  max-height: min(66vh, 620px);
   object-fit: contain;
   display: none;
   cursor: crosshair;
@@ -349,11 +687,21 @@ pre {
   height: 44px;
   border-radius: 0 0 var(--theme-radius) var(--theme-radius);
   border-top: 1px solid rgba(148, 163, 184, .22);
-  background: #272b30;
+  background: #171b22;
   display: grid;
   grid-template-columns: repeat(3, 1fr);
   align-items: center;
   overflow: hidden;
+}
+.device-nav[data-platform="ios"] {
+  grid-template-columns: 1fr;
+}
+.device-nav[data-platform="ios"] #navBack,
+.device-nav[data-platform="ios"] #navRecents {
+  display: none;
+}
+.device-nav .nav-hidden {
+  display: none;
 }
 .device-nav button {
   height: 100%;
@@ -386,25 +734,89 @@ pre {
   border-radius: 2px;
 }
 .field-band {
-  border: 1px solid rgba(226, 232, 240, .76);
+  border: 1px solid var(--theme-soft-line);
   border-radius: var(--theme-radius);
-  background: rgba(248, 250, 252, .86);
+  background: rgba(248, 250, 252, .78);
   padding: 14px;
   display: grid;
   gap: 10px;
 }
-@media (max-width: 1260px) {
-  .grid-cols-app { grid-template-columns: 250px minmax(0, 1fr); }
-  .border-l { grid-column: 1 / -1; border-left: 0; border-top: 1px solid var(--theme-line); }
+.action-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+@media (max-width: 1240px) {
+  .app-layout { grid-template-columns: 280px minmax(0, 1fr); }
+  .app-controls { grid-column: 1 / -1; min-height: auto; }
+  .field-band { grid-template-columns: minmax(0, 1fr) minmax(0, 1.25fr) auto; align-items: center; }
+  .action-grid { min-width: 290px; }
 }
 @media (max-width: 920px) {
-  .grid-cols-app { grid-template-columns: 1fr; }
-  .border-r, .border-l { border: 0; border-top: 1px solid var(--theme-line); }
-  section.bg-slate-50 { order: -1; padding: 18px; }
-  .justify-end { justify-content: stretch; }
-  .screen-wrap { min-height: 360px; }
+  .app-layout {
+    grid-template-columns: minmax(0, 1fr);
+    padding: 10px;
+    gap: 10px;
+  }
+  .monitor-pane {
+    order: -1;
+    min-height: auto;
+    padding: 12px;
+  }
+  .workspace-rail { min-height: auto; }
+  .devices-pane { max-height: 360px; }
+  .screen-wrap { min-height: 390px; }
+  .field-band { grid-template-columns: 1fr; }
+  .action-grid { min-width: 0; }
 }
 @media (max-width: 560px) {
+  body { background: #f3f6fa; }
+  .app-layout { padding: 0; gap: 0; }
+  .workspace-rail,
+  .monitor-pane,
+  .app-controls {
+    border-radius: 0;
+    border-left: 0;
+    border-right: 0;
+    box-shadow: none;
+  }
+  .monitor-toolbar,
+  .section-head {
+    align-items: flex-start;
+  }
+  .monitor-toolbar {
+    display: grid;
+  }
+  .toolbar-actions {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    width: 100%;
+  }
+  .toolbar-actions .status-pill {
+    grid-column: 1 / -1;
+    text-align: center;
+  }
+  .toolbar-actions .btn {
+    width: 100%;
+  }
+  .toolbar-actions .icon-btn {
+    width: 100%;
+  }
+  .settings-modal {
+    align-items: flex-end;
+    justify-content: center;
+    padding: 10px;
+  }
+  .settings-dialog {
+    width: 100%;
+    max-height: calc(100vh - 20px);
+  }
+  .screen-wrap {
+    min-height: 58vh;
+    border-radius: var(--theme-radius) var(--theme-radius) 0 0;
+  }
+  #screen { max-height: 58vh; }
+  .action-grid { grid-template-columns: 1fr; }
   .flex-wrap, .grid-cols-3 { grid-template-columns: 1fr; display: grid; }
 }
 "#;
@@ -416,6 +828,11 @@ const state = {
   ws: null,
   poll: null,
   pollAbort: null,
+  streamAbort: null,
+  webrtcPeer: null,
+  webrtcChannel: null,
+  webrtcSession: null,
+  webrtcFrames: new Map(),
   previewUrl: null,
   previewSeq: 0,
   pointerStart: null,
@@ -449,6 +866,7 @@ function renderDevices() {
   el('selectedMeta').textContent = state.selected
     ? `${state.selected.name} / ${state.selected.kind} / ${state.selected.id}`
     : 'Select a device to begin';
+  updateDeviceNav();
   for (const device of state.devices) {
     const btn = document.createElement('button');
     btn.className = `device ${state.selected && state.selected.id === device.id ? 'active' : ''}`;
@@ -462,6 +880,22 @@ function renderDevices() {
   }
   if (!state.devices.length) el('devices').innerHTML = '<p class="muted">No running devices found</p>';
 }
+function updateDeviceNav() {
+  const selectedText = el('selectedMeta').textContent || '';
+  const kind = (state.selected && state.selected.kind ? state.selected.kind : selectedText).toLowerCase();
+  const platform = kind.includes('ios') ? 'ios' : kind.includes('android') ? 'android' : 'none';
+  const nav = el('deviceNav');
+  nav.dataset.platform = platform;
+  nav.style.gridTemplateColumns = platform === 'ios' ? '1fr' : 'repeat(3, 1fr)';
+  const iosOnlyHome = platform === 'ios';
+  for (const id of ['navBack', 'navRecents']) {
+    const button = el(id);
+    button.hidden = iosOnlyHome;
+    button.setAttribute('aria-hidden', iosOnlyHome ? 'true' : 'false');
+    button.classList.toggle('nav-hidden', iosOnlyHome);
+  }
+}
+setInterval(updateDeviceNav, 300);
 async function loadDevices() {
   state.devices = await json('/api/devices');
   if (state.selected && !state.devices.find(d => d.id === state.selected.id)) state.selected = null;
@@ -511,7 +945,9 @@ function startPolling() {
 function startScreenshotStream() {
   stopPreview();
   if (!state.selected) return;
-  const screen = el('screen');
+  const seq = ++state.previewSeq;
+  const controller = new AbortController();
+  state.streamAbort = controller;
   const params = new URLSearchParams({
     fps: el('streamFps').value,
     format: el('streamFormat').value,
@@ -519,10 +955,80 @@ function startScreenshotStream() {
     quality: el('streamQuality').value,
     t: Date.now().toString()
   });
-  screen.src = `/api/devices/${selectedId()}/screenshot-stream?${params}`;
-  screen.style.display = 'block';
-  el('screenEmpty').style.display = 'none';
+  readScreenshotStream(`/api/devices/${selectedId()}/screenshot-stream?${params}`, controller.signal, seq)
+    .catch(err => {
+      if (err.name !== 'AbortError') setStatus(err.message);
+    });
   setStatus(`Streaming ${el('streamFps').value} fps / ${el('streamFormat').value.toUpperCase()}`);
+}
+async function startWebRtcStream() {
+  stopPreview();
+  if (!state.selected) return;
+  if (!window.RTCPeerConnection) {
+    setStatus('WebRTC unavailable, using HTTP stream');
+    startScreenshotStream();
+    return;
+  }
+
+  const seq = ++state.previewSeq;
+  const peer = new RTCPeerConnection({
+    iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+  });
+  const channel = peer.createDataChannel('appmo-preview', {
+    ordered: false,
+    maxRetransmits: 0
+  });
+  channel.binaryType = 'arraybuffer';
+  state.webrtcPeer = peer;
+  state.webrtcChannel = channel;
+  state.webrtcFrames.clear();
+
+  channel.onopen = () => setStatus(`WebRTC ${el('streamFps').value} fps / ${el('streamFormat').value.toUpperCase()}`);
+  channel.onclose = () => {
+    if (seq === state.previewSeq && el('viewMode').value === 'webrtc') setStatus('WebRTC stream closed');
+  };
+  channel.onerror = () => {
+    if (seq === state.previewSeq) setStatus('WebRTC stream error');
+  };
+  channel.onmessage = event => {
+    handleWebRtcFrame(event.data, seq).catch(err => {
+      if (seq === state.previewSeq) setStatus(err.message);
+    });
+  };
+  peer.onconnectionstatechange = () => {
+    if (seq !== state.previewSeq) return;
+    if (peer.connectionState === 'failed' || peer.connectionState === 'disconnected') {
+      setStatus('WebRTC lost, using HTTP stream');
+      startScreenshotStream();
+    }
+  };
+
+  try {
+    const offer = await peer.createOffer();
+    await peer.setLocalDescription(offer);
+    await waitForIceGathering(peer);
+    if (seq !== state.previewSeq) return;
+    const params = {
+      fps: Number(el('streamFps').value),
+      format: el('streamFormat').value,
+      max_width: Number(el('streamScale').value),
+      quality: Number(el('streamQuality').value),
+      offer: peer.localDescription
+    };
+    const response = await json(`/api/devices/${selectedId()}/webrtc/offer`, {
+      method: 'POST',
+      body: JSON.stringify(params)
+    });
+    if (seq !== state.previewSeq) return;
+    state.webrtcSession = response.session_id;
+    await peer.setRemoteDescription(response.answer);
+    setStatus('WebRTC connecting');
+  } catch (err) {
+    if (seq !== state.previewSeq) return;
+    stopWebRtc();
+    setStatus(`WebRTC unavailable: ${err.message}`);
+    startScreenshotStream();
+  }
 }
 function stopPreview() {
   if (state.stopPolling) {
@@ -535,7 +1041,152 @@ function stopPreview() {
     state.pollAbort.abort();
     state.pollAbort = null;
   }
+  if (state.streamAbort) {
+    state.streamAbort.abort();
+    state.streamAbort = null;
+  }
+  stopWebRtc();
   state.previewSeq++;
+}
+function stopWebRtc() {
+  state.webrtcFrames.clear();
+  state.webrtcSession = null;
+  if (state.webrtcChannel) {
+    state.webrtcChannel.onopen = null;
+    state.webrtcChannel.onclose = null;
+    state.webrtcChannel.onerror = null;
+    state.webrtcChannel.onmessage = null;
+    try { state.webrtcChannel.close(); } catch (_) {}
+    state.webrtcChannel = null;
+  }
+  if (state.webrtcPeer) {
+    state.webrtcPeer.onconnectionstatechange = null;
+    try { state.webrtcPeer.close(); } catch (_) {}
+    state.webrtcPeer = null;
+  }
+}
+async function readScreenshotStream(path, signal, seq) {
+  const res = await fetch(path, { signal, cache: 'no-store' });
+  if (!res.ok) {
+    const body = await res.text();
+    throw new Error(body || `${res.status} ${res.statusText}`);
+  }
+  const reader = res.body.getReader();
+  let buffer = new Uint8Array(0);
+  const delimiter = new TextEncoder().encode('\r\n\r\n');
+  while (seq === state.previewSeq) {
+    const { value, done } = await reader.read();
+    if (done) break;
+    buffer = appendBytes(buffer, value);
+    while (true) {
+      const headerEnd = indexOfBytes(buffer, delimiter);
+      if (headerEnd < 0) break;
+      const header = new TextDecoder().decode(buffer.slice(0, headerEnd));
+      const lengthMatch = header.match(/Content-Length:\s*(\d+)/i);
+      if (!lengthMatch) {
+        buffer = buffer.slice(headerEnd + delimiter.length);
+        continue;
+      }
+      const length = Number(lengthMatch[1]);
+      const frameStart = headerEnd + delimiter.length;
+      const frameEnd = frameStart + length;
+      if (buffer.length < frameEnd) break;
+      const typeMatch = header.match(/Content-Type:\s*([^\r\n]+)/i);
+      const frame = buffer.slice(frameStart, frameEnd);
+      buffer = buffer.slice(frameEnd);
+      const url = URL.createObjectURL(new Blob([frame], { type: typeMatch ? typeMatch[1].trim() : 'image/jpeg' }));
+      await preloadImage(url);
+      if (seq !== state.previewSeq) {
+        URL.revokeObjectURL(url);
+        return;
+      }
+      showPreviewUrl(url);
+      await nextAnimationFrame();
+    }
+  }
+}
+function waitForIceGathering(peer) {
+  if (peer.iceGatheringState === 'complete') return Promise.resolve();
+  return new Promise(resolve => {
+    const timeout = setTimeout(done, 1200);
+    function done() {
+      clearTimeout(timeout);
+      peer.removeEventListener('icegatheringstatechange', onChange);
+      resolve();
+    }
+    function onChange() {
+      if (peer.iceGatheringState === 'complete') done();
+    }
+    peer.addEventListener('icegatheringstatechange', onChange);
+  });
+}
+async function handleWebRtcFrame(data, seq) {
+  if (seq !== state.previewSeq) return;
+  const bytes = new Uint8Array(data);
+  if (bytes.length < 10) return;
+  const view = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength);
+  const frameSeq = view.getUint32(0);
+  const flags = bytes[4];
+  const typeLength = bytes[5];
+  const totalLength = view.getUint32(6);
+  const payloadStart = 10 + typeLength;
+  if (payloadStart > bytes.length) return;
+
+  let frame = state.webrtcFrames.get(frameSeq);
+  if (flags & 1) {
+    const contentType = new TextDecoder().decode(bytes.slice(10, payloadStart)) || 'image/jpeg';
+    frame = { contentType, totalLength, chunks: [], received: 0 };
+    state.webrtcFrames.set(frameSeq, frame);
+    trimWebRtcFrames();
+  }
+  if (!frame) return;
+
+  const chunk = bytes.slice(payloadStart);
+  frame.chunks.push(chunk);
+  frame.received += chunk.length;
+  if (!(flags & 2)) return;
+
+  state.webrtcFrames.delete(frameSeq);
+  const merged = new Uint8Array(frame.totalLength || frame.received);
+  let offset = 0;
+  for (const part of frame.chunks) {
+    merged.set(part.subarray(0, Math.min(part.length, merged.length - offset)), offset);
+    offset += part.length;
+    if (offset >= merged.length) break;
+  }
+  const url = URL.createObjectURL(new Blob([merged], { type: frame.contentType }));
+  await preloadImage(url);
+  if (seq !== state.previewSeq) {
+    URL.revokeObjectURL(url);
+    return;
+  }
+  showPreviewUrl(url);
+  await nextAnimationFrame();
+}
+function trimWebRtcFrames() {
+  while (state.webrtcFrames.size > 8) {
+    const oldest = state.webrtcFrames.keys().next().value;
+    state.webrtcFrames.delete(oldest);
+  }
+}
+function appendBytes(left, right) {
+  const merged = new Uint8Array(left.length + right.length);
+  merged.set(left);
+  merged.set(right, left.length);
+  return merged;
+}
+function indexOfBytes(buffer, needle) {
+  outer:
+  for (let i = 0; i <= buffer.length - needle.length; i++) {
+    for (let j = 0; j < needle.length; j++) {
+      if (buffer[i + j] !== needle[j]) continue outer;
+    }
+    return i;
+  }
+  return -1;
+}
+function nextAnimationFrame() {
+  return new Promise(resolve => requestAnimationFrame(resolve));
 }
 function preloadImage(url) {
   const image = new Image();
@@ -557,11 +1208,53 @@ function showPreviewUrl(url) {
   if (previousUrl) requestAnimationFrame(() => URL.revokeObjectURL(previousUrl));
 }
 function restartPreview() {
-  if (el('viewMode').value === 'stream') {
+  updateDeviceNav();
+  if (el('viewMode').value === 'webrtc') {
+    startWebRtcStream();
+  } else if (el('viewMode').value === 'stream') {
     startScreenshotStream();
   } else {
     startPolling();
   }
+}
+function openSettings() {
+  const modal = el('settingsModal');
+  modal.classList.add('open');
+  modal.setAttribute('aria-hidden', 'false');
+  el('viewMode').focus();
+}
+function closeSettings() {
+  const modal = el('settingsModal');
+  modal.classList.remove('open');
+  modal.setAttribute('aria-hidden', 'true');
+  el('settingsOpen').focus();
+}
+function isPreviewFullscreen() {
+  const activeElement = document.fullscreenElement || document.webkitFullscreenElement;
+  return activeElement === el('screenWrap');
+}
+function updateFullscreenButton() {
+  const button = el('fullscreenToggle');
+  const active = isPreviewFullscreen();
+  button.title = active ? 'Exit fullscreen' : 'Enter fullscreen';
+  button.setAttribute('aria-label', button.title);
+  button.classList.toggle('active', active);
+}
+async function toggleFullscreen() {
+  const preview = el('screenWrap');
+  const requestFullscreen = preview && (preview.requestFullscreen || preview.webkitRequestFullscreen);
+  const exitFullscreen = document.exitFullscreen || document.webkitExitFullscreen;
+  const fullscreenEnabled = document.fullscreenEnabled || document.webkitFullscreenEnabled;
+  if (!fullscreenEnabled || !preview || !requestFullscreen || !exitFullscreen) {
+    setStatus('Fullscreen is not supported');
+    return;
+  }
+  if (isPreviewFullscreen()) {
+    await exitFullscreen.call(document);
+  } else {
+    await requestFullscreen.call(preview);
+  }
+  updateFullscreenButton();
 }
 async function post(path, body) {
   await json(path, { method: 'POST', body: JSON.stringify(body || {}) });
@@ -675,13 +1368,24 @@ function connectWs() {
   };
 }
 el('refresh').onclick = () => loadDevices().catch(err => setStatus(err.message));
+el('fullscreenToggle').onclick = () => toggleFullscreen().catch(err => setStatus(err.message));
+document.addEventListener('fullscreenchange', updateFullscreenButton);
+document.addEventListener('webkitfullscreenchange', updateFullscreenButton);
+el('settingsOpen').onclick = () => openSettings();
+el('settingsClose').onclick = () => closeSettings();
+el('settingsModal').onclick = event => {
+  if (event.target === el('settingsModal')) closeSettings();
+};
+document.addEventListener('keydown', event => {
+  if (event.key === 'Escape' && el('settingsModal').classList.contains('open')) closeSettings();
+});
 el('shot').onclick = () => refreshScreenshot().catch(err => setStatus(err.message));
 el('viewMode').onchange = () => restartPreview();
 el('pollFps').onchange = () => { if (el('viewMode').value === 'poll') startPolling(); };
-el('streamFps').onchange = () => { if (el('viewMode').value === 'stream') startScreenshotStream(); };
-el('streamFormat').onchange = () => { if (el('viewMode').value === 'stream') startScreenshotStream(); };
-el('streamScale').onchange = () => { if (el('viewMode').value === 'stream') startScreenshotStream(); };
-el('streamQuality').onchange = () => { if (el('viewMode').value === 'stream') startScreenshotStream(); };
+el('streamFps').onchange = () => { if (el('viewMode').value !== 'poll') restartPreview(); };
+el('streamFormat').onchange = () => { if (el('viewMode').value !== 'poll') restartPreview(); };
+el('streamScale').onchange = () => { if (el('viewMode').value !== 'poll') restartPreview(); };
+el('streamQuality').onchange = () => { if (el('viewMode').value !== 'poll') restartPreview(); };
 el('logsBtn').onclick = () => loadLogs().catch(err => setStatus(err.message));
 el('navBack').onclick = () => sendKeyValue('BACK').catch(err => setStatus(err.message));
 el('navHome').onclick = () => sendKeyValue('HOME').catch(err => setStatus(err.message));

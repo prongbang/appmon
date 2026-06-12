@@ -56,7 +56,12 @@ control, but swipe/text/key need `idb` for full fidelity.
 
 Screen preview defaults to the conservative one-shot screenshot path with
 adaptive polling, adjustable FPS, preloaded image swaps, and no overlapping
-fetches so control commands keep room to run. An experimental Rust-served
-multipart stream is available from the UI; use `format=native` for low CPU
-overhead, or `format=jpeg` with `max_width` and `quality` when bandwidth is the
+fetches so control commands keep room to run. For smoother interactive preview,
+choose WebRTC mode: Appmo negotiates a local `RTCPeerConnection`, sends encoded
+screenshot frames over an unreliable `appmo-preview` data channel, chunks large
+frames safely, and reuses the same preloaded image swap path in the browser.
+If WebRTC negotiation fails, the UI falls back to the Rust-served multipart
+stream automatically. `format=auto` keeps iOS simulator JPEG frames native while
+converting larger Android PNG screenshots to scaled JPEG frames. Use
+`format=native` for lowest server CPU or `format=jpeg` when bandwidth is the
 bottleneck.

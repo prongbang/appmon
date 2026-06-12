@@ -27,6 +27,7 @@
   - `GET /api/devices`
   - `GET /api/devices/:id/screenshot`
   - `GET /api/devices/:id/screenshot-stream?format=native&fps=8`
+  - `POST /api/devices/:id/webrtc/offer`
   - `POST /api/devices/:id/input/tap`
   - `POST /api/devices/:id/input/swipe`
   - `POST /api/devices/:id/input/text`
@@ -51,7 +52,8 @@
 - `/health`, `/api/*`, และ `/ws` ไม่ต้องใช้ token
 - Server start ได้โดยไม่ต้องตั้งค่า `APPMO_TOKEN`
 - Screen preview default ใช้ one-shot screenshot + adaptive polling ที่ปรับ FPS ได้, ไม่ปล่อย fetch ซ้อน, preload frame ก่อน swap และ revoke object URL เก่าเพื่อลด memory/paint jitter
-- Experimental screenshot stream ใช้ Rust-served multipart stream (`multipart/x-mixed-replace`) และปรับ `fps`, `format`, `max_width`, และ JPEG `quality` ได้; server คุม cadence โดยหักเวลาที่ใช้ capture ออกจาก frame delay
+- WebRTC preview เป็น fast path สำหรับ interactive stream: browser สร้าง `RTCPeerConnection` + data channel `appmo-preview`, server ตอบ SDP answer ผ่าน `POST /api/devices/:id/webrtc/offer`, แล้วส่ง encoded screenshot frames เป็น chunked binary packets ผ่าน unreliable data channel; ถ้า negotiation/connection fail จะ fallback ไป multipart stream อัตโนมัติ
+- Screenshot stream ใช้ Rust-served multipart stream (`multipart/x-mixed-replace`) ที่ browser อ่านด้วย fetch reader แล้ว preload/swap frame เอง; `format=auto` คง iOS JPEG native แต่แปลง Android PNG เป็น JPEG ตาม `max_width`/`quality`
 - Mouse/touch gestures บนภาพหน้าจอใช้ vendored `interact.js` 1.10.27 เพื่อไม่ต้องดูแล raw pointer edge cases เอง
 - Android low-latency remote-control library ที่ควรต่อยอดคือ `scrcpy`/`@yume-chan/scrcpy`; v1 ใช้ persistent `adb shell input` เป็น transport หลังจาก gesture layer
 - Xcode เครื่องนี้ไม่มี `simctl io tap/swipe/key`; iOS full touch ใช้ `idb` แทน `simctl`
