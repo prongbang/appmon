@@ -84,8 +84,12 @@ async fn screenshot<R: ProcessRunner + Clone>(
     Path(id): Path<String>,
 ) -> Result<Response, ApiError> {
     let id = DeviceId::parse(&id)?;
-    let bytes = state.controller.screenshot(&id).await?;
-    Ok(([(header::CONTENT_TYPE, "image/png")], bytes).into_response())
+    let screenshot = state.controller.screenshot(&id).await?;
+    Ok((
+        [(header::CONTENT_TYPE, screenshot.content_type)],
+        screenshot.bytes,
+    )
+        .into_response())
 }
 
 async fn screenshot_stream<R: ProcessRunner + Clone>(
@@ -111,12 +115,12 @@ async fn screenshot_stream<R: ProcessRunner + Clone>(
                 tokio::time::sleep(frame_delay).await;
             }
             match controller.screenshot(&id).await {
-                Ok(bytes) => {
+                Ok(screenshot) => {
                     let frame = if encode_jpeg {
-                        encode_stream_frame(&bytes, max_width, quality)
-                            .unwrap_or_else(|_| ("image/png", bytes))
+                        encode_stream_frame(&screenshot.bytes, max_width, quality)
+                            .unwrap_or_else(|_| (screenshot.content_type, screenshot.bytes))
                     } else {
-                        ("image/png", bytes)
+                        (screenshot.content_type, screenshot.bytes)
                     };
                     let header = format!(
                     "\r\n--{boundary}\r\nContent-Type: {}\r\nContent-Length: {}\r\nCache-Control: no-store\r\n\r\n",
@@ -320,13 +324,33 @@ async fn execute_control<R: ProcessRunner + Clone>(
 ) -> Result<(), ApiError> {
     let id = DeviceId::parse(&request.device_id)?;
     match request.command {
-        ControlCommand::Tap { x, y } => state.controller.tap(&id, TapRequest { x, y }).await?,
+        ControlCommand::Tap {
+            x,
+            y,
+            source_width,
+            source_height,
+        } => {
+            state
+                .controller
+                .tap(
+                    &id,
+                    TapRequest {
+                        x,
+                        y,
+                        source_width,
+                        source_height,
+                    },
+                )
+                .await?
+        }
         ControlCommand::Swipe {
             x1,
             y1,
             x2,
             y2,
             duration_ms,
+            source_width,
+            source_height,
         } => {
             state
                 .controller
@@ -338,6 +362,8 @@ async fn execute_control<R: ProcessRunner + Clone>(
                         x2,
                         y2,
                         duration_ms,
+                        source_width,
+                        source_height,
                     },
                 )
                 .await?
@@ -416,6 +442,8 @@ enum ControlCommand {
     Tap {
         x: u32,
         y: u32,
+        source_width: Option<u32>,
+        source_height: Option<u32>,
     },
     Swipe {
         x1: u32,
@@ -423,6 +451,8 @@ enum ControlCommand {
         x2: u32,
         y2: u32,
         duration_ms: Option<u32>,
+        source_width: Option<u32>,
+        source_height: Option<u32>,
     },
     Key {
         key: String,
@@ -560,6 +590,8 @@ mod tests {
             udp_bind: None,
             adb_path: "/bin/echo".into(),
             xcrun_path: "/bin/echo".into(),
+            osascript_path: "/bin/echo".into(),
+            idb_path: "/bin/echo".into(),
         };
         build_router(DeviceManager::with_runner(config, MockRunner::default()))
     }

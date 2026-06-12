@@ -75,7 +75,7 @@ fn MonitorPane() -> Element {
                         option { value: "15", "15 fps" }
                     }
                     select { id: "streamFormat", title: "Stream format", aria_label: "Stream format",
-                        option { value: "png", selected: true, "Fast PNG" }
+                        option { value: "native", selected: true, "Fast native" }
                         option { value: "jpeg", "Small JPEG" }
                     }
                     select { id: "streamScale", title: "Stream scale", aria_label: "Stream scale",
@@ -529,7 +529,9 @@ function clientPointToImage(clientX, clientY) {
   const y = Math.max(0, Math.min(rect.height, clientY - rect.top));
   return {
     x: Math.round(x * img.naturalWidth / rect.width),
-    y: Math.round(y * img.naturalHeight / rect.height)
+    y: Math.round(y * img.naturalHeight / rect.height),
+    source_width: img.naturalWidth,
+    source_height: img.naturalHeight
   };
 }
 async function sendPointerCommand(start, end) {
@@ -544,7 +546,9 @@ async function sendPointerCommand(start, end) {
       y1: start.y,
       x2: end.x,
       y2: end.y,
-      duration_ms: 250
+      duration_ms: 250,
+      source_width: start.source_width,
+      source_height: start.source_height
     };
     await control('swipe', payload, `/api/devices/${selectedId()}/input/swipe`);
     setStatus(`Swiped ${start.x}, ${start.y} -> ${end.x}, ${end.y}`);

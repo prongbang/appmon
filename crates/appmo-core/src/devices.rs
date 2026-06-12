@@ -1,7 +1,12 @@
-use std::{collections::HashMap, path::PathBuf, process::Stdio, sync::Arc, time::Instant};
+use std::{
+    collections::{HashMap, HashSet},
+    path::PathBuf,
+    process::Stdio,
+    sync::Arc,
+    time::{Duration, Instant},
+};
 
 use serde::{Deserialize, Serialize};
-use tempfile::NamedTempFile;
 use tokio::{
     io::AsyncWriteExt,
     process::{ChildStdin, Command},
@@ -65,10 +70,18 @@ pub struct Device {
     pub details: Vec<String>,
 }
 
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub struct Screenshot {
+    pub content_type: &'static str,
+    pub bytes: Vec<u8>,
+}
+
 #[derive(Clone, Debug, Deserialize)]
 pub struct TapRequest {
     pub x: u32,
     pub y: u32,
+    pub source_width: Option<u32>,
+    pub source_height: Option<u32>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -78,6 +91,8 @@ pub struct SwipeRequest {
     pub x2: u32,
     pub y2: u32,
     pub duration_ms: Option<u32>,
+    pub source_width: Option<u32>,
+    pub source_height: Option<u32>,
 }
 
 #[derive(Clone, Debug, Deserialize)]
@@ -121,6 +136,8 @@ pub struct DeviceManager<R: ProcessRunner = TokioProcessRunner> {
     runner: Arc<R>,
     recordings: Arc<Mutex<HashMap<String, RecordingJob>>>,
     android_inputs: Arc<Mutex<HashMap<String, AndroidInputSession>>>,
+    ios_points: Arc<Mutex<HashMap<String, PointDimensions>>>,
+    ios_companions: Arc<Mutex<HashSet<String>>>,
 }
 
 pub type AppController = DeviceManager<TokioProcessRunner>;
@@ -138,6 +155,8 @@ impl<R: ProcessRunner> DeviceManager<R> {
             runner: Arc::new(runner),
             recordings: Arc::new(Mutex::new(HashMap::new())),
             android_inputs: Arc::new(Mutex::new(HashMap::new())),
+            ios_points: Arc::new(Mutex::new(HashMap::new())),
+            ios_companions: Arc::new(Mutex::new(HashSet::new())),
         }
     }
 
@@ -148,7 +167,7 @@ impl<R: ProcessRunner> DeviceManager<R> {
         Ok(devices)
     }
 
-    pub async fn screenshot(&self, id: &DeviceId) -> AppResult<Vec<u8>> {
+    pub async fn screenshot(&self, id: &DeviceId) -> AppResult<Screenshot> {
         match id.kind {
             DeviceKind::Android => {
                 let args = vec![
@@ -158,24 +177,30 @@ impl<R: ProcessRunner> DeviceManager<R> {
                     "screencap".to_string(),
                     "-p".to_string(),
                 ];
-                Ok(self
-                    .run_logged("android_screenshot", &self.config.adb_path, &args)
-                    .await?
-                    .stdout)
+                Ok(Screenshot {
+                    content_type: "image/png",
+                    bytes: self
+                        .run_logged("android_screenshot", &self.config.adb_path, &args)
+                        .await?
+                        .stdout,
+                })
             }
             DeviceKind::Ios => {
-                let file = NamedTempFile::new()?;
-                let path = file.path().to_path_buf();
                 let args = vec![
                     "simctl".to_string(),
                     "io".to_string(),
                     id.raw.clone(),
                     "screenshot".to_string(),
-                    path.display().to_string(),
+                    "--type=jpeg".to_string(),
+                    "-".to_string(),
                 ];
-                self.run_logged("ios_screenshot", &self.config.xcrun_path, &args)
-                    .await?;
-                Ok(tokio::fs::read(path).await?)
+                Ok(Screenshot {
+                    content_type: "image/jpeg",
+                    bytes: self
+                        .run_logged("ios_screenshot_stdout", &self.config.xcrun_path, &args)
+                        .await?
+                        .stdout,
+                })
             }
         }
     }
@@ -193,15 +218,10 @@ impl<R: ProcessRunner> DeviceManager<R> {
                 .await?;
             }
             DeviceKind::Ios => {
-                let args = vec![
-                    "simctl".to_string(),
-                    "io".to_string(),
-                    id.raw.clone(),
-                    "tap".to_string(),
-                    req.x.to_string(),
-                    req.y.to_string(),
-                ];
-                self.run_ios_input("ios_tap", args).await?;
+                if let Err(error) = self.run_ios_idb_tap(id, &req).await {
+                    info!(device = %id.raw, %error, "idb tap unavailable, falling back to simulator window tap");
+                    self.run_ios_window_tap(req).await?;
+                }
             }
         }
         Ok(())
@@ -230,18 +250,7 @@ impl<R: ProcessRunner> DeviceManager<R> {
                 .await?;
             }
             DeviceKind::Ios => {
-                let args = vec![
-                    "simctl".to_string(),
-                    "io".to_string(),
-                    id.raw.clone(),
-                    "swipe".to_string(),
-                    req.x1.to_string(),
-                    req.y1.to_string(),
-                    req.x2.to_string(),
-                    req.y2.to_string(),
-                    duration.to_string(),
-                ];
-                self.run_ios_input("ios_swipe", args).await?;
+                self.run_ios_idb_swipe(id, &req, duration).await?;
             }
         }
         Ok(())
@@ -260,9 +269,7 @@ impl<R: ProcessRunner> DeviceManager<R> {
                 .await?;
             }
             DeviceKind::Ios => {
-                return Err(AppError::UnsupportedCapability(
-                    "simctl does not provide reliable text input in this v1".to_string(),
-                ));
+                self.run_ios_idb_text(id, &req.text).await?;
             }
         }
         Ok(())
@@ -280,14 +287,7 @@ impl<R: ProcessRunner> DeviceManager<R> {
                 .await?;
             }
             DeviceKind::Ios => {
-                let args = vec![
-                    "simctl".to_string(),
-                    "io".to_string(),
-                    id.raw.clone(),
-                    "key".to_string(),
-                    req.key,
-                ];
-                self.run_ios_input("ios_key", args).await?;
+                self.run_ios_idb_key(id, &req.key).await?;
             }
         }
         Ok(())
@@ -499,22 +499,6 @@ impl<R: ProcessRunner> DeviceManager<R> {
         parse_simctl_devices(&output.stdout)
     }
 
-    async fn run_ios_input(&self, op: &'static str, args: Vec<String>) -> AppResult<CommandOutput> {
-        match self.run_logged(op, &self.config.xcrun_path, &args).await {
-            Err(AppError::CommandFailed { stderr, .. })
-                if stderr.contains("Invalid device command")
-                    || stderr.contains("Usage:")
-                    || stderr.contains("unrecognized") =>
-            {
-                Err(AppError::UnsupportedCapability(
-                    "simctl input is not supported by the installed Xcode command line tools"
-                        .to_string(),
-                ))
-            }
-            other => other,
-        }
-    }
-
     async fn run_android_input(
         &self,
         id: &DeviceId,
@@ -554,6 +538,233 @@ impl<R: ProcessRunner> DeviceManager<R> {
         session.write_command(command).await
     }
 
+    async fn run_ios_idb_tap(&self, id: &DeviceId, req: &TapRequest) -> AppResult<()> {
+        let (x, y) = self
+            .map_ios_point(id, req.x, req.y, req.source_width, req.source_height)
+            .await?;
+        self.run_idb_ui(
+            id,
+            "ios_idb_tap",
+            vec!["ui".into(), "tap".into(), x.to_string(), y.to_string()],
+            Duration::from_secs(3),
+        )
+        .await
+    }
+
+    async fn run_ios_idb_swipe(
+        &self,
+        id: &DeviceId,
+        req: &SwipeRequest,
+        duration_ms: u32,
+    ) -> AppResult<()> {
+        let (x1, y1) = self
+            .map_ios_point(id, req.x1, req.y1, req.source_width, req.source_height)
+            .await?;
+        let (x2, y2) = self
+            .map_ios_point(id, req.x2, req.y2, req.source_width, req.source_height)
+            .await?;
+        let duration = format!("{:.3}", f64::from(duration_ms) / 1000.0);
+        self.run_idb_ui(
+            id,
+            "ios_idb_swipe",
+            vec![
+                "ui".into(),
+                "swipe".into(),
+                x1.to_string(),
+                y1.to_string(),
+                x2.to_string(),
+                y2.to_string(),
+                "--duration".into(),
+                duration,
+            ],
+            Duration::from_secs(5),
+        )
+        .await
+    }
+
+    async fn run_ios_idb_text(&self, id: &DeviceId, text: &str) -> AppResult<()> {
+        self.run_idb_ui(
+            id,
+            "ios_idb_text",
+            vec!["ui".into(), "text".into(), text.to_string()],
+            Duration::from_secs(5),
+        )
+        .await
+    }
+
+    async fn run_ios_idb_key(&self, id: &DeviceId, key: &str) -> AppResult<()> {
+        if let Some(button) = ios_button_for_key(key) {
+            return self
+                .run_idb_ui(
+                    id,
+                    "ios_idb_button",
+                    vec!["ui".into(), "button".into(), button.to_string()],
+                    Duration::from_secs(3),
+                )
+                .await;
+        }
+        self.run_idb_ui(
+            id,
+            "ios_idb_key",
+            vec!["ui".into(), "key".into(), key.to_string()],
+            Duration::from_secs(5),
+        )
+        .await
+    }
+
+    async fn run_idb_ui(
+        &self,
+        id: &DeviceId,
+        op: &'static str,
+        args: Vec<String>,
+        timeout: Duration,
+    ) -> AppResult<()> {
+        let mut command_args = args;
+        self.ensure_idb_connected(id).await?;
+        command_args.extend(["--udid".to_string(), id.raw.clone()]);
+        self.run_logged_timeout(op, &self.config.idb_path, &command_args, timeout)
+            .await
+            .map(|_| ())
+            .map_err(|error| match error {
+                AppError::ToolMissing(_) => AppError::UnsupportedCapability(
+                    "idb is required for full iOS simulator touch control; install fb-idb/idb-companion and set APPMO_IDB_PATH if needed".to_string(),
+                ),
+                AppError::Io(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                    AppError::UnsupportedCapability(
+                        "idb is required for full iOS simulator touch control; install fb-idb/idb-companion and set APPMO_IDB_PATH if needed".to_string(),
+                    )
+                }
+                AppError::CommandFailed { stderr, .. }
+                    if stderr.contains("No such file")
+                        || stderr.contains("not found")
+                        || stderr.contains("No target")
+                        || stderr.contains("not connected") =>
+                {
+                    AppError::UnsupportedCapability(format!(
+                        "idb could not control this iOS simulator: {stderr}"
+                    ))
+                }
+                other => other,
+            })
+    }
+
+    async fn map_ios_point(
+        &self,
+        id: &DeviceId,
+        x: u32,
+        y: u32,
+        source_width: Option<u32>,
+        source_height: Option<u32>,
+    ) -> AppResult<(u32, u32)> {
+        let Some(source_width) = source_width.filter(|value| *value > 0) else {
+            return Ok((x, y));
+        };
+        let Some(source_height) = source_height.filter(|value| *value > 0) else {
+            return Ok((x, y));
+        };
+        let points = self.ios_point_dimensions(id).await?;
+        Ok((
+            scale_coordinate(x, source_width, points.width),
+            scale_coordinate(y, source_height, points.height),
+        ))
+    }
+
+    async fn ios_point_dimensions(&self, id: &DeviceId) -> AppResult<PointDimensions> {
+        if let Some(dimensions) = self.ios_points.lock().await.get(&id.raw).copied() {
+            return Ok(dimensions);
+        }
+
+        self.ensure_idb_connected(id).await?;
+        let args = vec!["describe".to_string(), "--udid".to_string(), id.raw.clone()];
+        let output = self
+            .run_logged_timeout(
+                "ios_idb_describe",
+                &self.config.idb_path,
+                &args,
+                Duration::from_secs(3),
+            )
+            .await?;
+        let stdout = String::from_utf8_lossy(&output.stdout);
+        let dimensions = parse_idb_point_dimensions(&stdout).unwrap_or(PointDimensions {
+            width: 390,
+            height: 844,
+        });
+        self.ios_points
+            .lock()
+            .await
+            .insert(id.raw.clone(), dimensions);
+        Ok(dimensions)
+    }
+
+    async fn ensure_idb_connected(&self, id: &DeviceId) -> AppResult<()> {
+        {
+            let companions = self.ios_companions.lock().await;
+            if companions.contains(&id.raw) {
+                return Ok(());
+            }
+        }
+
+        let args = vec!["connect".to_string(), id.raw.clone()];
+        self.run_logged_timeout(
+            "ios_idb_connect",
+            &self.config.idb_path,
+            &args,
+            Duration::from_secs(5),
+        )
+        .await
+        .map_err(|error| match error {
+            AppError::ToolMissing(_) => AppError::UnsupportedCapability(
+                "idb is required for full iOS simulator touch control; install fb-idb/idb-companion and set APPMO_IDB_PATH if needed".to_string(),
+            ),
+            AppError::Io(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                AppError::UnsupportedCapability(
+                    "idb is required for full iOS simulator touch control; install fb-idb/idb-companion and set APPMO_IDB_PATH if needed".to_string(),
+                )
+            }
+            other => other,
+        })?;
+
+        self.ios_companions.lock().await.insert(id.raw.clone());
+        Ok(())
+    }
+
+    async fn run_ios_window_tap(&self, req: TapRequest) -> AppResult<()> {
+        let source_width = req.source_width.unwrap_or(1).max(1);
+        let source_height = req.source_height.unwrap_or(1).max(1);
+        let script = format!(
+            r#"tell application "Simulator" to activate
+tell application "System Events"
+  tell process "Simulator"
+    set frontmost to true
+    set {{x1, y1, x2, y2}} to bounds of window 1
+    set appmoX to x1 + (((x2 - x1) * {x}) / {source_width})
+    set appmoY to y1 + (((y2 - y1) * {y}) / {source_height})
+    click at {{appmoX as integer, appmoY as integer}}
+  end tell
+end tell"#,
+            x = req.x,
+            y = req.y,
+            source_width = source_width,
+            source_height = source_height
+        );
+        let args = vec!["-e".to_string(), script];
+        match self
+            .run_logged("ios_tap_simulator_window", &self.config.osascript_path, &args)
+            .await
+        {
+            Err(AppError::CommandFailed { stderr, .. })
+                if stderr.contains("not allowed assistive access")
+                    || stderr.contains("-1719")
+                    || stderr.contains("-10827") =>
+            {
+                Err(AppError::UnsupportedCapability(
+                    "iOS simulator tap needs macOS Accessibility permission for osascript/System Events".to_string(),
+                ))
+            }
+            other => other.map(|_| ()),
+        }
+    }
+
     async fn run_logged(
         &self,
         op: &'static str,
@@ -562,6 +773,33 @@ impl<R: ProcessRunner> DeviceManager<R> {
     ) -> AppResult<CommandOutput> {
         let start = Instant::now();
         let result = self.runner.run(program, args).await;
+        info!(
+            op,
+            program = %program.display(),
+            duration_ms = start.elapsed().as_millis(),
+            success = result.is_ok(),
+            "device command completed"
+        );
+        result
+    }
+
+    async fn run_logged_timeout(
+        &self,
+        op: &'static str,
+        program: &std::path::Path,
+        args: &[String],
+        timeout: Duration,
+    ) -> AppResult<CommandOutput> {
+        let start = Instant::now();
+        let result = tokio::time::timeout(timeout, self.runner.run(program, args))
+            .await
+            .map_err(|_| AppError::CommandFailed {
+                program: program.display().to_string(),
+                args: args.to_vec(),
+                status: None,
+                stderr: format!("command timed out after {}ms", timeout.as_millis()),
+            })
+            .and_then(|result| result);
         info!(
             op,
             program = %program.display(),
@@ -584,6 +822,12 @@ struct RecordingJob {
 struct AndroidInputSession {
     stdin: ChildStdin,
     child: tokio::process::Child,
+}
+
+#[derive(Clone, Copy, Debug)]
+struct PointDimensions {
+    width: u32,
+    height: u32,
 }
 
 impl AndroidInputSession {
@@ -640,6 +884,42 @@ fn shell_quote(value: &str) -> String {
         return value.to_string();
     }
     format!("'{}'", value.replace('\'', "'\\''"))
+}
+
+fn scale_coordinate(value: u32, source: u32, target: u32) -> u32 {
+    ((u64::from(value) * u64::from(target)) / u64::from(source))
+        .min(u64::from(target.saturating_sub(1)))
+        .try_into()
+        .unwrap_or(target.saturating_sub(1))
+}
+
+fn parse_idb_point_dimensions(input: &str) -> Option<PointDimensions> {
+    let width = parse_idb_dimension(input, "width_points")?;
+    let height = parse_idb_dimension(input, "height_points")?;
+    Some(PointDimensions { width, height })
+}
+
+fn parse_idb_dimension(input: &str, key: &str) -> Option<u32> {
+    let start = input.find(key)? + key.len();
+    let rest = input[start..].trim_start();
+    let rest = rest.strip_prefix('=').unwrap_or(rest).trim_start();
+    let digits = rest
+        .chars()
+        .take_while(|value| value.is_ascii_digit())
+        .collect::<String>();
+    digits.parse().ok()
+}
+
+fn ios_button_for_key(key: &str) -> Option<&'static str> {
+    match key.to_ascii_uppercase().as_str() {
+        "HOME" => Some("HOME"),
+        "LOCK" | "SLEEP" => Some("LOCK"),
+        "SIRI" => Some("SIRI"),
+        "SIDE_BUTTON" | "SIDE-BUTTON" => Some("SIDE_BUTTON"),
+        "APPLE_PAY" | "APPLE-PAY" => Some("APPLE_PAY"),
+        "APP_SWITCH" | "RECENTS" | "BACK" => Some("HOME"),
+        _ => None,
+    }
 }
 
 pub fn parse_adb_devices(input: &str) -> Vec<Device> {
@@ -764,5 +1044,19 @@ mod tests {
         assert_eq!(shell_quote("BACK"), "BACK");
         assert_eq!(shell_quote("hello%s"), "hello%s");
         assert_eq!(shell_quote("can't"), "'can'\\''t'");
+    }
+
+    #[test]
+    fn parses_idb_point_dimensions() {
+        let output = "name=iPhone width_points=430 height_points=932 other=value";
+        let dimensions = parse_idb_point_dimensions(output).unwrap();
+        assert_eq!(dimensions.width, 430);
+        assert_eq!(dimensions.height, 932);
+    }
+
+    #[test]
+    fn scales_coordinates_to_idb_points() {
+        assert_eq!(scale_coordinate(660, 1320, 430), 215);
+        assert_eq!(scale_coordinate(2868, 2868, 932), 931);
     }
 }

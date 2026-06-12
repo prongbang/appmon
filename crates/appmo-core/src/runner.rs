@@ -23,7 +23,7 @@ pub struct TokioProcessRunner;
 #[async_trait]
 impl ProcessRunner for TokioProcessRunner {
     async fn run(&self, program: &Path, args: &[String]) -> AppResult<CommandOutput> {
-        if !program.exists() {
+        if should_check_program_exists(program) && !program.exists() {
             return Err(AppError::ToolMissing(program.display().to_string()));
         }
 
@@ -52,4 +52,8 @@ impl ProcessRunner for TokioProcessRunner {
             stderr,
         })
     }
+}
+
+fn should_check_program_exists(program: &Path) -> bool {
+    program.is_absolute() || program.components().count() > 1
 }

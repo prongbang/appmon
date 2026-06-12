@@ -8,6 +8,8 @@ pub struct AppConfig {
     pub udp_bind: Option<SocketAddr>,
     pub adb_path: PathBuf,
     pub xcrun_path: PathBuf,
+    pub osascript_path: PathBuf,
+    pub idb_path: PathBuf,
 }
 
 impl AppConfig {
@@ -34,13 +36,52 @@ impl AppConfig {
             bind,
             udp_bind,
             adb_path: env::var("ANDROID_ADB_PATH")
-                .unwrap_or_else(|_| {
-                    "/Users/inteniquetic/Library/Android/sdk/platform-tools/adb".to_string()
-                })
+                .unwrap_or_else(|_| default_adb_path().display().to_string())
                 .into(),
             xcrun_path: env::var("IOS_XCRUN_PATH")
                 .unwrap_or_else(|_| "/usr/bin/xcrun".to_string())
                 .into(),
+            osascript_path: env::var("APPMO_OSASCRIPT_PATH")
+                .unwrap_or_else(|_| "/usr/bin/osascript".to_string())
+                .into(),
+            idb_path: env::var("APPMO_IDB_PATH")
+                .unwrap_or_else(|_| default_idb_path().display().to_string())
+                .into(),
         })
     }
+}
+
+fn default_adb_path() -> PathBuf {
+    let android_home = env::var("ANDROID_HOME")
+        .or_else(|_| env::var("ANDROID_SDK_ROOT"))
+        .ok()
+        .map(PathBuf::from);
+    if let Some(path) = android_home
+        .map(|path| path.join("platform-tools").join("adb"))
+        .filter(|path| path.exists())
+    {
+        return path;
+    }
+
+    let home_sdk = env::var("HOME")
+        .ok()
+        .map(PathBuf::from)
+        .map(|home| home.join("Library/Android/sdk/platform-tools/adb"));
+    if let Some(path) = home_sdk.filter(|path| path.exists()) {
+        return path;
+    }
+
+    "adb".into()
+}
+
+fn default_idb_path() -> PathBuf {
+    let user_idb = env::var("HOME")
+        .ok()
+        .map(PathBuf::from)
+        .map(|home| home.join(".local/bin/idb"));
+    if let Some(path) = user_idb.filter(|path| path.exists()) {
+        return path;
+    }
+
+    "idb".into()
 }

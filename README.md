@@ -9,6 +9,15 @@ cp .env.example .env
 cargo run -p appmo-server
 ```
 
+On startup Appmo checks the local control tools and auto-installs missing
+developer dependencies when possible. It can install Android platform tools with
+Homebrew, plus `idb-companion` and `fb-idb` for iOS full touch control. Disable
+this bootstrap with:
+
+```sh
+APPMO_AUTO_INSTALL_DEPS=false cargo run -p appmo-server
+```
+
 Open:
 
 ```text
@@ -35,8 +44,18 @@ available, with REST as a compatibility fallback. Android input keeps a
 persistent `adb shell` session per device and writes `input ...` commands into
 that session, avoiding a new `adb` process for every tap/swipe/key event.
 
+iOS simulator preview uses `xcrun simctl io <udid> screenshot --type=jpeg -`,
+which streams compact screenshot bytes through stdout instead of writing a
+temporary file. Full iOS simulator touch control follows the same approach as
+ios-bridge: Appmo uses `idb ui tap/swipe/text/key/button --udid <udid>` and maps
+browser screenshot pixels into iOS point coordinates from `idb describe`.
+At startup Appmo auto-installs `idb-companion` and `fb-idb` when `idb` is
+missing. You can still set `APPMO_IDB_PATH` if `idb` lives outside `PATH`.
+When `idb` is unavailable, tap falls back to Simulator-window AppleScript
+control, but swipe/text/key need `idb` for full fidelity.
+
 Screen preview defaults to the conservative one-shot screenshot path with a
 1-second refresh interval because it leaves more room for control commands. An
 experimental Rust-served multipart stream is available from the UI; use
-`format=png` for low CPU overhead, or `format=jpeg` with `max_width` and
+`format=native` for low CPU overhead, or `format=jpeg` with `max_width` and
 `quality` when bandwidth is the bottleneck.

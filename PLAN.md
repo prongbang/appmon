@@ -19,13 +19,14 @@
 - Config:
   - `APPMO_BIND=0.0.0.0:8080`
   - `APPMO_UDP_BIND=0.0.0.0:8081` หรือ `off` เพื่อปิด UDP
+  - `APPMO_AUTO_INSTALL_DEPS=false` เพื่อปิด dependency bootstrap ตอน server start
   - `ANDROID_ADB_PATH=/Users/inteniquetic/Library/Android/sdk/platform-tools/adb`
   - `IOS_XCRUN_PATH=/usr/bin/xcrun`
 - API v1:
   - `GET /health`
   - `GET /api/devices`
   - `GET /api/devices/:id/screenshot`
-  - `GET /api/devices/:id/screenshot-stream?format=png&fps=8`
+  - `GET /api/devices/:id/screenshot-stream?format=native&fps=8`
   - `POST /api/devices/:id/input/tap`
   - `POST /api/devices/:id/input/swipe`
   - `POST /api/devices/:id/input/text`
@@ -41,6 +42,10 @@
 ## Implementation Notes
 - ทุก device command ผ่าน typed layer ใน `appmo-core`; คำสั่งทั่วไปยังรันผ่าน `tokio::process::Command` ด้วย args array
 - Android tap/swipe/text/key ใช้ fast path เป็น persistent `adb -s <serial> shell` session ต่อ device แล้วเขียน `input ...` เข้า stdin เพื่อลด process-spawn latency
+- iOS simulator screenshot ใช้ `xcrun simctl io <udid> screenshot --type=jpeg -` เพื่ออ่าน bytes ขนาดเล็กจาก stdout โดยตรงแทน temp file
+- iOS Full Touch Control พอร์ตแนวทางจาก `ios-bridge`: ใช้ `idb describe` อ่าน point dimensions และใช้ `idb ui tap/swipe/text/key/button --udid <udid>` สำหรับ control แบบเต็ม
+- ตอน server start จะตรวจและติดตั้ง tool ที่ขาดให้เองเท่าที่ทำได้: `android-platform-tools`, `idb-companion`, และ `fb-idb`; ถ้าปิดด้วย `APPMO_AUTO_INSTALL_DEPS=false` จะข้ามขั้นตอนนี้
+- ถ้า `idb` ไม่พร้อม iOS tap fallback เป็น `osascript` + macOS Accessibility map พิกัดจาก screenshot ไปยัง Simulator window; swipe/text/key ต้องใช้ `idb`
 - Web UI ส่ง control ผ่าน WebSocket ก่อน และ fallback ไป REST endpoint เดิมถ้า WebSocket ไม่พร้อม
 - Browser ใช้ UDP raw โดยตรงไม่ได้ จึงยังใช้ WebSocket สำหรับหน้าเว็บ; UDP protocol มีไว้สำหรับ native/local control client ที่ส่ง datagram ได้
 - `/health`, `/api/*`, และ `/ws` ไม่ต้องใช้ token
@@ -49,7 +54,7 @@
 - Experimental screenshot stream ใช้ Rust-served multipart stream (`multipart/x-mixed-replace`) และปรับ `fps`, `format`, `max_width`, และ JPEG `quality` ได้; ใช้เมื่อต้องการทดลองต่อเนื่องหรือ optimize bandwidth
 - Mouse/touch gestures บนภาพหน้าจอใช้ vendored `interact.js` 1.10.27 เพื่อไม่ต้องดูแล raw pointer edge cases เอง
 - Android low-latency remote-control library ที่ควรต่อยอดคือ `scrcpy`/`@yume-chan/scrcpy`; v1 ใช้ persistent `adb shell input` เป็น transport หลังจาก gesture layer
-- iOS tap/swipe ใช้ capability path ของ `xcrun simctl io <udid> tap/swipe`; ถ้า Xcode ไม่รองรับจะคืน `UnsupportedCapability`
+- Xcode เครื่องนี้ไม่มี `simctl io tap/swipe/key`; iOS full touch ใช้ `idb` แทน `simctl`
 
 ## Test Plan
 - Unit tests:

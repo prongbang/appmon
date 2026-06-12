@@ -2,6 +2,8 @@ use appmo_core::{AppConfig, AppController};
 use appmo_server::{build_router, run_udp_control};
 use tracing_subscriber::{layer::SubscriberExt, util::SubscriberInitExt};
 
+mod bootstrap;
+
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
     tracing_subscriber::registry()
@@ -11,6 +13,8 @@ async fn main() -> anyhow::Result<()> {
         )
         .with(tracing_subscriber::fmt::layer())
         .init();
+
+    bootstrap::ensure_runtime_dependencies();
 
     let config = AppConfig::from_env()?;
     let bind = config.bind;
