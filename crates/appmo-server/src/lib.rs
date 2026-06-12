@@ -17,7 +17,11 @@ use bytes::Bytes;
 use futures_util::stream;
 use image::{codecs::jpeg::JpegEncoder, imageops::FilterType, GenericImageView};
 use serde::{Deserialize, Serialize};
-use std::{convert::Infallible, net::SocketAddr, time::Duration};
+use std::{
+    convert::Infallible,
+    net::SocketAddr,
+    time::{Duration, Instant},
+};
 use tokio::net::UdpSocket;
 use tower_http::trace::TraceLayer;
 use tracing::{error, info, warn};
@@ -109,11 +113,15 @@ async fn screenshot_stream<R: ProcessRunner + Clone>(
     let controller = state.controller.clone();
     let boundary = "appmo-frame";
     let body_stream = stream::unfold(
-        (controller, id, true),
-        move |(controller, id, first_frame)| async move {
-            if !first_frame {
-                tokio::time::sleep(frame_delay).await;
+        (controller, id, None::<Instant>),
+        move |(controller, id, last_frame)| async move {
+            if let Some(last_frame) = last_frame {
+                let elapsed = last_frame.elapsed();
+                if elapsed < frame_delay {
+                    tokio::time::sleep(frame_delay - elapsed).await;
+                }
             }
+            let frame_started = Instant::now();
             match controller.screenshot(&id).await {
                 Ok(screenshot) => {
                     let frame = if encode_jpeg {
@@ -132,7 +140,7 @@ async fn screenshot_stream<R: ProcessRunner + Clone>(
                     payload.extend_from_slice(&frame.1);
                     Some((
                         Ok::<Bytes, Infallible>(Bytes::from(payload)),
-                        (controller, id, false),
+                        (controller, id, Some(frame_started)),
                     ))
                 }
                 Err(error) => {

@@ -50,8 +50,8 @@
 - Browser ใช้ UDP raw โดยตรงไม่ได้ จึงยังใช้ WebSocket สำหรับหน้าเว็บ; UDP protocol มีไว้สำหรับ native/local control client ที่ส่ง datagram ได้
 - `/health`, `/api/*`, และ `/ws` ไม่ต้องใช้ token
 - Server start ได้โดยไม่ต้องตั้งค่า `APPMO_TOKEN`
-- Screen preview default ใช้ one-shot screenshot + polling 1000ms เพราะเบียด control path น้อยกว่า continuous stream ใน adb/screencap pipeline ปัจจุบัน
-- Experimental screenshot stream ใช้ Rust-served multipart stream (`multipart/x-mixed-replace`) และปรับ `fps`, `format`, `max_width`, และ JPEG `quality` ได้; ใช้เมื่อต้องการทดลองต่อเนื่องหรือ optimize bandwidth
+- Screen preview default ใช้ one-shot screenshot + adaptive polling ที่ปรับ FPS ได้, ไม่ปล่อย fetch ซ้อน, preload frame ก่อน swap และ revoke object URL เก่าเพื่อลด memory/paint jitter
+- Experimental screenshot stream ใช้ Rust-served multipart stream (`multipart/x-mixed-replace`) และปรับ `fps`, `format`, `max_width`, และ JPEG `quality` ได้; server คุม cadence โดยหักเวลาที่ใช้ capture ออกจาก frame delay
 - Mouse/touch gestures บนภาพหน้าจอใช้ vendored `interact.js` 1.10.27 เพื่อไม่ต้องดูแล raw pointer edge cases เอง
 - Android low-latency remote-control library ที่ควรต่อยอดคือ `scrcpy`/`@yume-chan/scrcpy`; v1 ใช้ persistent `adb shell input` เป็น transport หลังจาก gesture layer
 - Xcode เครื่องนี้ไม่มี `simctl io tap/swipe/key`; iOS full touch ใช้ `idb` แทน `simctl`

@@ -593,6 +593,9 @@ impl<R: ProcessRunner> DeviceManager<R> {
     }
 
     async fn run_ios_idb_key(&self, id: &DeviceId, key: &str) -> AppResult<()> {
+        if is_ios_app_switch_key(key) {
+            return self.run_ios_idb_app_switch(id).await;
+        }
         if let Some(button) = ios_button_for_key(key) {
             return self
                 .run_idb_ui(
@@ -607,6 +610,29 @@ impl<R: ProcessRunner> DeviceManager<R> {
             id,
             "ios_idb_key",
             vec!["ui".into(), "key".into(), key.to_string()],
+            Duration::from_secs(5),
+        )
+        .await
+    }
+
+    async fn run_ios_idb_app_switch(&self, id: &DeviceId) -> AppResult<()> {
+        let points = self.ios_point_dimensions(id).await?;
+        let x = points.width / 2;
+        let y_start = points.height.saturating_sub(8);
+        let y_end = points.height.saturating_mul(52) / 100;
+        self.run_idb_ui(
+            id,
+            "ios_idb_app_switch",
+            vec![
+                "ui".into(),
+                "swipe".into(),
+                x.to_string(),
+                y_start.to_string(),
+                x.to_string(),
+                y_end.to_string(),
+                "--duration".into(),
+                "0.650".into(),
+            ],
             Duration::from_secs(5),
         )
         .await
@@ -917,9 +943,13 @@ fn ios_button_for_key(key: &str) -> Option<&'static str> {
         "SIRI" => Some("SIRI"),
         "SIDE_BUTTON" | "SIDE-BUTTON" => Some("SIDE_BUTTON"),
         "APPLE_PAY" | "APPLE-PAY" => Some("APPLE_PAY"),
-        "APP_SWITCH" | "RECENTS" | "BACK" => Some("HOME"),
+        "BACK" => Some("HOME"),
         _ => None,
     }
+}
+
+fn is_ios_app_switch_key(key: &str) -> bool {
+    matches!(key.to_ascii_uppercase().as_str(), "APP_SWITCH" | "RECENTS")
 }
 
 pub fn parse_adb_devices(input: &str) -> Vec<Device> {

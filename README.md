@@ -54,8 +54,9 @@ missing. You can still set `APPMO_IDB_PATH` if `idb` lives outside `PATH`.
 When `idb` is unavailable, tap falls back to Simulator-window AppleScript
 control, but swipe/text/key need `idb` for full fidelity.
 
-Screen preview defaults to the conservative one-shot screenshot path with a
-1-second refresh interval because it leaves more room for control commands. An
-experimental Rust-served multipart stream is available from the UI; use
-`format=native` for low CPU overhead, or `format=jpeg` with `max_width` and
-`quality` when bandwidth is the bottleneck.
+Screen preview defaults to the conservative one-shot screenshot path with
+adaptive polling, adjustable FPS, preloaded image swaps, and no overlapping
+fetches so control commands keep room to run. An experimental Rust-served
+multipart stream is available from the UI; use `format=native` for low CPU
+overhead, or `format=jpeg` with `max_width` and `quality` when bandwidth is the
+bottleneck.

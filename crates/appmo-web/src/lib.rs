@@ -68,6 +68,13 @@ fn MonitorPane() -> Element {
                         option { value: "poll", selected: true, "Polling" }
                         option { value: "stream", "Stream" }
                     }
+                    select { id: "pollFps", title: "Polling FPS", aria_label: "Polling FPS",
+                        option { value: "1", "1 fps" }
+                        option { value: "2", "2 fps" }
+                        option { value: "4", selected: true, "4 fps" }
+                        option { value: "6", "6 fps" }
+                        option { value: "8", "8 fps" }
+                    }
                     select { id: "streamFps", title: "Stream FPS", aria_label: "Stream FPS",
                         option { value: "4", "4 fps" }
                         option { value: "8", selected: true, "8 fps" }
@@ -328,6 +335,9 @@ pre {
   cursor: crosshair;
   user-select: none;
   -webkit-user-drag: none;
+  image-rendering: auto;
+  transform: translateZ(0);
+  will-change: contents;
 }
 .empty-screen {
   color: rgba(255,255,255,.72);
@@ -400,7 +410,18 @@ pre {
 "#;
 
 const APP_SCRIPT: &str = r#"
-const state = { devices: [], selected: null, ws: null, poll: null, pointerStart: null, pending: new Map(), requestSeq: 0 };
+const state = {
+  devices: [],
+  selected: null,
+  ws: null,
+  poll: null,
+  pollAbort: null,
+  previewUrl: null,
+  previewSeq: 0,
+  pointerStart: null,
+  pending: new Map(),
+  requestSeq: 0
+};
 const el = id => document.getElementById(id);
 
 function setStatus(text) {
@@ -435,8 +456,7 @@ function renderDevices() {
     btn.onclick = () => {
       state.selected = device;
       renderDevices();
-      refreshScreenshot();
-      startPolling();
+      restartPreview();
     };
     el('devices').appendChild(btn);
   }
@@ -450,19 +470,46 @@ async function loadDevices() {
 }
 async function refreshScreenshot() {
   if (!state.selected) return;
-  const res = await api(`/api/devices/${selectedId()}/screenshot`);
+  const seq = ++state.previewSeq;
+  const controller = new AbortController();
+  if (state.pollAbort) state.pollAbort.abort();
+  state.pollAbort = controller;
+  const res = await api(`/api/devices/${selectedId()}/screenshot`, { signal: controller.signal });
   const blob = await res.blob();
-  el('screen').src = URL.createObjectURL(blob);
-  el('screen').style.display = 'block';
-  el('screenEmpty').style.display = 'none';
+  const url = URL.createObjectURL(blob);
+  try {
+    await preloadImage(url);
+    if (seq !== state.previewSeq) {
+      URL.revokeObjectURL(url);
+      return;
+    }
+    showPreviewUrl(url);
+  } finally {
+    if (state.pollAbort === controller) state.pollAbort = null;
+  }
 }
 function startPolling() {
-  clearInterval(state.poll);
+  stopPreview();
   if (!state.selected) return;
-  state.poll = setInterval(() => refreshScreenshot().catch(err => setStatus(err.message)), 1000);
+  let active = true;
+  const run = async () => {
+    if (!active || !state.selected || el('viewMode').value !== 'poll') return;
+    const started = performance.now();
+    try {
+      await refreshScreenshot();
+    } catch (err) {
+      if (err.name !== 'AbortError') setStatus(err.message);
+    }
+    const fps = Math.max(1, Number(el('pollFps').value) || 4);
+    const delay = Math.max(0, (1000 / fps) - (performance.now() - started));
+    state.poll = setTimeout(run, delay);
+  };
+  state.poll = setTimeout(run, 0);
+  state.stopPolling = () => { active = false; };
+  setStatus(`Polling ${el('pollFps').value} fps`);
 }
 function startScreenshotStream() {
-  clearInterval(state.poll);
+  stopPreview();
   if (!state.selected) return;
   const screen = el('screen');
   const params = new URLSearchParams({
@@ -477,11 +524,42 @@ function startScreenshotStream() {
   el('screenEmpty').style.display = 'none';
   setStatus(`Streaming ${el('streamFps').value} fps / ${el('streamFormat').value.toUpperCase()}`);
 }
+function stopPreview() {
+  if (state.stopPolling) {
+    state.stopPolling();
+    state.stopPolling = null;
+  }
+  clearTimeout(state.poll);
+  state.poll = null;
+  if (state.pollAbort) {
+    state.pollAbort.abort();
+    state.pollAbort = null;
+  }
+  state.previewSeq++;
+}
+function preloadImage(url) {
+  const image = new Image();
+  image.decoding = 'async';
+  image.src = url;
+  if (image.decode) return image.decode();
+  return new Promise((resolve, reject) => {
+    image.onload = resolve;
+    image.onerror = reject;
+  });
+}
+function showPreviewUrl(url) {
+  const screen = el('screen');
+  const previousUrl = state.previewUrl;
+  state.previewUrl = url;
+  screen.src = url;
+  screen.style.display = 'block';
+  el('screenEmpty').style.display = 'none';
+  if (previousUrl) requestAnimationFrame(() => URL.revokeObjectURL(previousUrl));
+}
 function restartPreview() {
   if (el('viewMode').value === 'stream') {
     startScreenshotStream();
   } else {
-    refreshScreenshot().catch(err => setStatus(err.message));
     startPolling();
   }
 }
@@ -553,7 +631,9 @@ async function sendPointerCommand(start, end) {
     await control('swipe', payload, `/api/devices/${selectedId()}/input/swipe`);
     setStatus(`Swiped ${start.x}, ${start.y} -> ${end.x}, ${end.y}`);
   }
-  refreshScreenshot().catch(err => setStatus(err.message));
+  if (el('viewMode').value === 'poll') {
+    refreshScreenshot().catch(err => setStatus(err.message));
+  }
 }
 async function sendKeyValue(key) {
   await control('key', { key }, `/api/devices/${selectedId()}/key`);
@@ -597,6 +677,7 @@ function connectWs() {
 el('refresh').onclick = () => loadDevices().catch(err => setStatus(err.message));
 el('shot').onclick = () => refreshScreenshot().catch(err => setStatus(err.message));
 el('viewMode').onchange = () => restartPreview();
+el('pollFps').onchange = () => { if (el('viewMode').value === 'poll') startPolling(); };
 el('streamFps').onchange = () => { if (el('viewMode').value === 'stream') startScreenshotStream(); };
 el('streamFormat').onchange = () => { if (el('viewMode').value === 'stream') startScreenshotStream(); };
 el('streamScale').onchange = () => { if (el('viewMode').value === 'stream') startScreenshotStream(); };
