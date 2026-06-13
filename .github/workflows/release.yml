@@ -1,0 +1,192 @@
+name: Release
+
+on:
+  workflow_dispatch:
+    inputs:
+      version:
+        description: "Release version, for example 0.1.0. Defaults to Cargo.toml version."
+        required: false
+        type: string
+  push:
+    tags:
+      - "v*"
+
+permissions:
+  contents: write
+
+env:
+  CARGO_TERM_COLOR: always
+  BINARY_NAME: appmon-server
+  HOMEBREW_TAP_REPOSITORY: prongbang/homebrew-formulae
+
+jobs:
+  build:
+    name: Build ${{ matrix.label }}
+    runs-on: macos-latest
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - label: macOS x86_64
+            target: x86_64-apple-darwin
+            asset_suffix: Darwin_x86_64
+          - label: macOS arm64
+            target: aarch64-apple-darwin
+            asset_suffix: Darwin_arm64
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Install Rust
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Cache Rust build
+        uses: Swatinem/rust-cache@v2
+
+      - name: Resolve version
+        shell: bash
+        run: |
+          if [ -n "${{ inputs.version }}" ]; then
+            VERSION="${{ inputs.version }}"
+          elif [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          else
+            VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)"
+          fi
+
+          echo "VERSION=${VERSION}" >> "${GITHUB_ENV}"
+          echo "ASSET_NAME=${VERSION}_${{ matrix.asset_suffix }}" >> "${GITHUB_ENV}"
+
+      - name: Test
+        run: cargo test --locked
+
+      - name: Build release binary
+        run: cargo build --locked --release --target ${{ matrix.target }} -p appmon-server
+
+      - name: Package artifact
+        shell: bash
+        run: |
+          ARTIFACT="${ASSET_NAME}.tar.gz"
+          tar -czf "${ARTIFACT}" -C "target/${{ matrix.target }}/release" "${BINARY_NAME}"
+          echo "ARTIFACT=${ARTIFACT}" >> "${GITHUB_ENV}"
+
+      - name: Upload build artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ env.ASSET_NAME }}
+          path: ${{ env.ARTIFACT }}
+
+  release:
+    name: Publish GitHub Release
+    runs-on: ubuntu-latest
+    needs: build
+    env:
+      HOMEBREW_TAP_TOKEN: ${{ secrets.HOMEBREW_TAP_TOKEN }}
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Download build artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Resolve version
+        shell: bash
+        run: |
+          if [ -n "${{ inputs.version }}" ]; then
+            VERSION="${{ inputs.version }}"
+          elif [[ "${GITHUB_REF_TYPE}" == "tag" ]]; then
+            VERSION="${GITHUB_REF_NAME#v}"
+          else
+            VERSION="$(sed -n 's/^version = "\(.*\)"/\1/p' Cargo.toml | head -n 1)"
+          fi
+
+          echo "VERSION=${VERSION}" >> "${GITHUB_ENV}"
+          echo "RELEASE_TAG=v${VERSION}" >> "${GITHUB_ENV}"
+
+      - name: Generate Homebrew formula
+        shell: bash
+        run: |
+          RELEASE_URL="https://github.com/${GITHUB_REPOSITORY}/releases/download/${RELEASE_TAG}"
+
+          DARWIN_ARM_SHA="$(sha256sum "dist/${VERSION}_Darwin_arm64.tar.gz" | awk '{print $1}')"
+          DARWIN_X86_SHA="$(sha256sum "dist/${VERSION}_Darwin_x86_64.tar.gz" | awk '{print $1}')"
+
+          mkdir -p homebrew-formula
+          cat > homebrew-formula/appmon.rb <<EOF
+          class Appmon < Formula
+            desc "Local web console for controlling Android emulators and iOS simulators on a Mac"
+            homepage "https://github.com/${GITHUB_REPOSITORY}"
+            version "${VERSION}"
+            license "MIT"
+
+            if Hardware::CPU.arm?
+              url "${RELEASE_URL}/${VERSION}_Darwin_arm64.tar.gz"
+              sha256 "${DARWIN_ARM_SHA}"
+            else
+              url "${RELEASE_URL}/${VERSION}_Darwin_x86_64.tar.gz"
+              sha256 "${DARWIN_X86_SHA}"
+            end
+
+            def install
+              bin.install "appmon-server"
+            end
+
+            test do
+              port = free_port
+              ENV["APPMON_AUTO_INSTALL_DEPS"] = "false"
+              ENV["APPMON_BIND"] = "127.0.0.1:#{port}"
+              ENV["APPMON_UDP_BIND"] = "off"
+
+              pid = fork { exec "#{bin}/appmon-server" }
+              sleep 2
+              assert_match '"ok":true', shell_output("curl -fsS http://127.0.0.1:#{port}/health")
+            ensure
+              Process.kill("TERM", pid) if pid
+              Process.wait(pid) if pid
+            end
+          end
+          EOF
+
+          sed -i 's/^          //' homebrew-formula/appmon.rb
+          cp homebrew-formula/appmon.rb dist/appmon.rb
+
+      - name: Publish release assets
+        uses: softprops/action-gh-release@v2
+        with:
+          tag_name: ${{ env.RELEASE_TAG }}
+          target_commitish: ${{ github.sha }}
+          files: dist/*
+
+      - name: Checkout Homebrew tap
+        if: env.HOMEBREW_TAP_TOKEN != ''
+        uses: actions/checkout@v4
+        with:
+          repository: ${{ env.HOMEBREW_TAP_REPOSITORY }}
+          token: ${{ env.HOMEBREW_TAP_TOKEN }}
+          path: homebrew-tap
+
+      - name: Update Homebrew formula
+        if: env.HOMEBREW_TAP_TOKEN != ''
+        shell: bash
+        run: |
+          mkdir -p homebrew-tap/Formula
+          cp homebrew-formula/appmon.rb homebrew-tap/Formula/appmon.rb
+
+          cd homebrew-tap
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add Formula/appmon.rb
+
+          if git diff --cached --quiet; then
+            echo "Homebrew formula is already up to date."
+            exit 0
+          fi
+
+          git commit -m "Update appmon to ${VERSION}"
+          git push
