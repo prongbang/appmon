@@ -18,6 +18,7 @@ target/
 .env
 .env.*
 !.env.example
+PLAN.md
 
 ### Logs and runtime output
 *.log
