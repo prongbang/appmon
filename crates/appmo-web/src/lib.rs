@@ -68,16 +68,6 @@ fn DevicesPane() -> Element {
                     span { class: "refresh-icon" }
                 }
             }
-            div { class: "device-selectors",
-                div { class: "device-select-field",
-                    label { r#for: "androidDeviceSelect", "Android" }
-                    select { id: "androidDeviceSelect", aria_label: "Select Android device" }
-                }
-                div { class: "device-select-field",
-                    label { r#for: "iosDeviceSelect", "iOS" }
-                    select { id: "iosDeviceSelect", aria_label: "Select iOS device" }
-                }
-            }
             div { id: "devices", class: "device-list" }
         }
     }
@@ -795,22 +785,6 @@ body.preview-fullscreen-lock {
   font-weight: 820;
   text-transform: uppercase;
 }
-.device-selectors {
-  display: grid;
-  gap: 10px;
-  margin-bottom: 14px;
-}
-.device-select-field {
-  display: grid;
-  gap: 6px;
-}
-.device-select-field label {
-  color: var(--tw-slate-500);
-  font-size: 11px;
-  font-weight: 780;
-  text-transform: uppercase;
-}
-.device-select-field select,
 .settings-grid select {
   width: 100%;
   min-height: 40px;
@@ -1216,17 +1190,6 @@ select {
   color: #334155;
   border-radius: 999px;
 }
-.device-selectors {
-  padding: 10px;
-  border: 1px solid var(--theme-soft-line);
-  border-radius: var(--theme-radius);
-  background: var(--surface-muted);
-}
-.device-select-field label {
-  color: #475569;
-  letter-spacing: 0;
-}
-.device-select-field select,
 .settings-grid select {
   background-color: #fff;
   box-shadow: none;
@@ -1424,6 +1387,283 @@ pre {
   #screenCanvas,
   #screenVideo { max-height: 58vh; }
 }
+
+/* Dark control-room skin. This final layer intentionally owns the visible
+   palette while preserving the existing DOM and device interaction ids. */
+:root {
+  color-scheme: dark;
+  --theme-line: rgba(148, 163, 184, .18);
+  --theme-soft-line: rgba(148, 163, 184, .12);
+  --theme-ring: rgba(45, 212, 191, .24);
+  --surface: rgba(18, 24, 35, .92);
+  --surface-strong: #151b28;
+  --surface-muted: rgba(30, 41, 59, .72);
+  --surface-control: rgba(15, 23, 42, .82);
+  --ink: #eef6ff;
+  --ink-muted: #94a3b8;
+  --ink-soft: #cbd5e1;
+  --brand-a: #2dd4bf;
+  --brand-b: #f9735c;
+  --brand-c: #f5b84b;
+  --shadow-panel: 0 22px 60px rgba(0, 0, 0, .34);
+  --shadow-soft: 0 12px 28px rgba(0, 0, 0, .22);
+}
+body {
+  background: #080b10;
+  color: var(--ink);
+}
+input,
+textarea,
+select {
+  border-color: var(--theme-line);
+  background-color: var(--surface-control);
+  color: var(--ink);
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .035);
+}
+input::placeholder { color: #64748b; }
+select {
+  background-image:
+    linear-gradient(45deg, transparent 50%, #5eead4 50%),
+    linear-gradient(135deg, #5eead4 50%, transparent 50%);
+}
+pre {
+  border-color: rgba(45, 212, 191, .14);
+  background: #06080d;
+  color: #dbeafe;
+}
+.text-slate-950,
+.text-slate-700,
+.section-title,
+.brand-title,
+.monitor-title {
+  color: var(--ink);
+}
+.text-slate-500,
+.section-kicker,
+.brand-subtitle,
+.muted,
+#selectedMeta,
+#status {
+  color: var(--ink-muted);
+}
+.app-shell {
+  background:
+    linear-gradient(180deg, rgba(45, 212, 191, .08), transparent 280px),
+    linear-gradient(120deg, rgba(249, 115, 92, .08), transparent 380px),
+    #080b10;
+}
+.app-layout {
+  gap: 14px;
+  padding: 14px;
+}
+.workspace-rail,
+.app-controls,
+.monitor-card,
+.logs-panel,
+.settings-dialog {
+  border-color: var(--theme-soft-line);
+  background: var(--surface);
+  box-shadow: var(--shadow-panel);
+}
+.workspace-rail,
+.app-controls,
+.monitor-card,
+.logs-panel {
+  backdrop-filter: blur(18px);
+}
+.monitor-pane {
+  background: transparent;
+}
+.brand-lockup {
+  background: linear-gradient(180deg, rgba(30, 41, 59, .86), rgba(15, 23, 42, .72));
+  border-bottom-color: var(--theme-soft-line);
+}
+.brand-mark {
+  color: #071014;
+  background: linear-gradient(135deg, #5eead4, #f5b84b);
+  box-shadow: 0 14px 34px rgba(45, 212, 191, .18);
+}
+.section-head {
+  border-color: var(--theme-soft-line);
+}
+.icon-btn,
+.btn,
+.device-action {
+  border-color: var(--theme-line);
+  color: var(--ink);
+  background: linear-gradient(180deg, rgba(30, 41, 59, .88), rgba(15, 23, 42, .9));
+  box-shadow: 0 10px 24px rgba(0, 0, 0, .2);
+}
+.icon-btn {
+  color: var(--ink-soft);
+}
+.icon-btn:hover,
+.btn:hover,
+.device-action:hover {
+  border-color: rgba(45, 212, 191, .42);
+  background: linear-gradient(180deg, rgba(45, 212, 191, .16), rgba(15, 23, 42, .94));
+  color: #f8ffff;
+  transform: translateY(-1px);
+}
+.icon-btn.active {
+  border-color: rgba(45, 212, 191, .62);
+  background: rgba(20, 184, 166, .14);
+  color: #5eead4;
+}
+.btn {
+  border-color: rgba(45, 212, 191, .36);
+  background: linear-gradient(180deg, #14b8a6, #0f766e);
+  color: #ecfeff;
+}
+.btn-secondary {
+  border-color: var(--theme-line);
+  background: linear-gradient(180deg, rgba(30, 41, 59, .92), rgba(15, 23, 42, .88));
+  color: var(--ink);
+}
+.btn-danger {
+  border-color: rgba(248, 113, 113, .42);
+  background: linear-gradient(180deg, #ef4444, #991b1b);
+  color: #fff7ed;
+}
+.btn.is-done {
+  border-color: rgba(94, 234, 212, .46);
+  background: linear-gradient(180deg, #0f766e, #115e59);
+}
+.btn-secondary.is-done {
+  background: rgba(20, 184, 166, .14);
+  color: #99f6e4;
+}
+.status-pill {
+  border-color: rgba(45, 212, 191, .25);
+  background: rgba(20, 184, 166, .12);
+  color: #99f6e4;
+}
+.settings-modal {
+  background: rgba(2, 6, 23, .72);
+}
+.settings-dialog {
+  background: #101724;
+}
+.settings-grid select {
+  background-color: var(--surface-control);
+  color: var(--ink);
+}
+.settings-feedback {
+  border-color: var(--theme-soft-line);
+  background: rgba(15, 23, 42, .72);
+  color: var(--ink-soft);
+}
+.settings-feedback.success {
+  border-color: rgba(45, 212, 191, .32);
+  background: rgba(20, 184, 166, .12);
+  color: #99f6e4;
+}
+.settings-feedback.error {
+  border-color: rgba(248, 113, 113, .34);
+  background: rgba(127, 29, 29, .22);
+  color: #fecaca;
+}
+.settings-feedback.working {
+  border-color: rgba(245, 184, 75, .34);
+  background: rgba(120, 53, 15, .18);
+  color: #fde68a;
+}
+.device-group-title {
+  color: #5eead4;
+  letter-spacing: .02em;
+}
+.device {
+  position: relative;
+  border-color: var(--theme-soft-line);
+  background: linear-gradient(180deg, rgba(22, 30, 44, .96), rgba(13, 18, 28, .96));
+  color: var(--ink);
+  box-shadow: 0 12px 28px rgba(0, 0, 0, .18);
+  overflow: hidden;
+}
+.device::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto 0 0;
+  width: 3px;
+  background: rgba(148, 163, 184, .28);
+}
+.device:hover {
+  border-color: rgba(45, 212, 191, .32);
+  background: linear-gradient(180deg, rgba(24, 36, 52, .98), rgba(13, 22, 32, .98));
+}
+.device.active {
+  border-color: rgba(45, 212, 191, .62);
+  background: linear-gradient(180deg, rgba(20, 184, 166, .18), rgba(15, 23, 42, .96));
+  outline: 2px solid rgba(45, 212, 191, .18);
+}
+.device.active::before {
+  background: linear-gradient(180deg, #5eead4, #f5b84b);
+}
+.device strong {
+  color: var(--ink);
+}
+.device-action {
+  min-height: 32px;
+  color: var(--ink-soft);
+}
+.device-action.start {
+  border-color: rgba(45, 212, 191, .32);
+  color: #99f6e4;
+}
+.device-action.stop {
+  border-color: rgba(248, 113, 113, .34);
+  color: #fecaca;
+}
+.screen-wrap {
+  border-color: rgba(45, 212, 191, .14);
+  background:
+    linear-gradient(180deg, rgba(15, 23, 42, .2), rgba(0, 0, 0, .34)),
+    #030712;
+  box-shadow: inset 0 1px 0 rgba(255, 255, 255, .04);
+}
+.empty-screen {
+  color: rgba(203, 213, 225, .7);
+}
+.device-nav {
+  border-top-color: rgba(45, 212, 191, .14);
+  background: #0a1019;
+}
+.device-nav button {
+  color: #94a3b8;
+}
+.device-nav button:hover {
+  background: rgba(45, 212, 191, .12);
+  color: #ccfbf1;
+}
+.field-band {
+  border-color: var(--theme-soft-line);
+  background: rgba(15, 23, 42, .5);
+}
+.fullscreen-exit {
+  border-color: rgba(45, 212, 191, .2);
+  background: rgba(2, 6, 23, .78);
+  color: #e0f2fe;
+}
+@media (max-width: 920px) {
+  .sidebar-backdrop {
+    background: rgba(2, 6, 23, .66);
+  }
+  .workspace-rail {
+    border-color: rgba(45, 212, 191, .16);
+  }
+}
+@media (max-width: 560px) {
+  body,
+  .app-shell {
+    background: #080b10;
+  }
+  .monitor-card,
+  .logs-panel,
+  .workspace-rail,
+  .app-controls {
+    border-color: var(--theme-soft-line);
+  }
+}
 "#;
 
 const APP_SCRIPT: &str = r#"
@@ -1560,36 +1800,11 @@ async function setDevicePower(device, actionButton) {
     renderDevices();
   }
 }
-function renderPlatformSelect(platform, selectId, selectLabel, emptyLabel) {
-  const select = el(selectId);
-  select.innerHTML = '';
-  const devices = state.devices.filter(item => devicePlatform(item) === platform);
-
-  const placeholder = document.createElement('option');
-  placeholder.value = '';
-  placeholder.textContent = devices.length ? selectLabel : emptyLabel;
-  select.appendChild(placeholder);
-
-  for (const device of devices) {
-    const option = document.createElement('option');
-    option.value = device.id;
-    option.textContent = `${device.name} / ${device.state}`;
-    select.appendChild(option);
-  }
-
-  select.value = state.selected && devicePlatform(state.selected) === platform ? state.selected.id : '';
-  select.disabled = select.options.length <= 1;
-}
-function renderDeviceDropdowns() {
-  renderPlatformSelect('android', 'androidDeviceSelect', 'Select Android device', 'No Android devices');
-  renderPlatformSelect('ios', 'iosDeviceSelect', 'Select iOS device', 'No iOS devices');
-}
 function renderDevices() {
   el('devices').innerHTML = '';
   el('selectedMeta').textContent = state.selected
     ? `${state.selected.name} / ${state.selected.kind} / ${state.selected.id}`
     : 'Select a device to begin';
-  renderDeviceDropdowns();
   updateDeviceNav();
   for (const [platform, title] of [['android', 'Android'], ['ios', 'iOS']]) {
     const devices = state.devices.filter(device => devicePlatform(device) === platform);
@@ -2259,12 +2474,6 @@ function connectWs() {
   };
 }
 el('refresh').onclick = () => loadDevices().catch(err => setStatus(err.message));
-el('androidDeviceSelect').onchange = event => {
-  if (event.target.value) selectDevice(event.target.value);
-};
-el('iosDeviceSelect').onchange = event => {
-  if (event.target.value) selectDevice(event.target.value);
-};
 el('sidebarToggle').onclick = () => openSidebar();
 el('sidebarBackdrop').onclick = () => closeSidebar();
 document.addEventListener('click', event => {
