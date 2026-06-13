@@ -42,7 +42,6 @@ fn App() -> Element {
                         div { class: "brand-mark", "A" }
                         div {
                             h1 { class: "brand-title", "Appmo" }
-                            p { class: "brand-subtitle", "Device control console" }
                         }
                     }
                     DevicesPane {}
@@ -62,7 +61,6 @@ fn DevicesPane() -> Element {
             div { class: "section-head",
                 div {
                     h2 { class: "section-title", "Devices" }
-                    p { class: "section-kicker", "Android and iOS targets" }
                 }
                 button { id: "refresh", class: "icon-btn", title: "Refresh devices", aria_label: "Refresh devices",
                     span { class: "refresh-icon" }
@@ -85,7 +83,7 @@ fn MonitorPane() -> Element {
                         }
                         div {
                             h2 { class: "monitor-title", "Monitor" }
-                            span { id: "selectedMeta", class: "text-xs text-slate-500", "Select a device to begin" }
+                            span { id: "selectedMeta", class: "text-xs text-slate-500", "No device selected" }
                         }
                     }
                     div { class: "toolbar-actions",
@@ -93,7 +91,8 @@ fn MonitorPane() -> Element {
                         button { id: "fullscreenToggle", class: "icon-btn", title: "Enter fullscreen", aria_label: "Enter fullscreen",
                             span { class: "fullscreen-icon" }
                         }
-                        button { id: "settingsOpen", class: "btn btn-secondary", "Preview" }
+                        button { id: "appOpen", class: "btn btn-secondary", title: "Open app controls", aria_label: "Open app controls", "App" }
+                        button { id: "settingsOpen", class: "btn btn-secondary", title: "Preview controls", aria_label: "Preview controls", "View" }
                     }
                 }
                 div { id: "screenWrap", class: "screen-wrap",
@@ -123,7 +122,6 @@ fn PreviewSettingsModal() -> Element {
                 div { class: "section-head compact",
                     div {
                         h2 { id: "settingsTitle", class: "section-title", "Preview Controls" }
-                        p { class: "section-kicker", "Stream, capture, and diagnostics" }
                     }
                     button { id: "settingsClose", class: "icon-btn", title: "Close", aria_label: "Close",
                         span { class: "close-icon" }
@@ -197,11 +195,10 @@ fn DeviceNav() -> Element {
 #[component]
 fn LogsPanel() -> Element {
     rsx! {
-        div { class: "logs-panel",
+        div { id: "logsPanel", class: "logs-panel",
             div { class: "section-head compact",
                 div {
                     h2 { class: "section-title", "Logs" }
-                    p { class: "section-kicker", "Last 300 lines" }
                 }
             }
             pre { id: "logs" }
@@ -212,11 +209,13 @@ fn LogsPanel() -> Element {
 #[component]
 fn AppControls() -> Element {
     rsx! {
-        aside { class: "app-controls panel-section",
+        aside { id: "appPanel", class: "app-controls panel-section", aria_hidden: "true",
             div { class: "section-head",
                 div {
                     h2 { class: "section-title", "App" }
-                    p { class: "section-kicker", "Install and launch" }
+                }
+                button { id: "appClose", class: "icon-btn", title: "Close app controls", aria_label: "Close app controls",
+                    span { class: "close-icon" }
                 }
             }
             div { class: "field-band",
@@ -904,6 +903,9 @@ body.preview-fullscreen-lock {
 .device-nav[data-platform="ios"] {
   grid-template-columns: 1fr;
 }
+.device-nav[data-platform="none"] {
+  display: none;
+}
 .device-nav[data-platform="ios"] #navBack,
 .device-nav[data-platform="ios"] #navRecents {
   display: none;
@@ -1392,24 +1394,24 @@ pre {
    palette while preserving the existing DOM and device interaction ids. */
 :root {
   color-scheme: dark;
-  --theme-line: rgba(148, 163, 184, .18);
-  --theme-soft-line: rgba(148, 163, 184, .12);
-  --theme-ring: rgba(45, 212, 191, .24);
-  --surface: rgba(18, 24, 35, .92);
-  --surface-strong: #151b28;
-  --surface-muted: rgba(30, 41, 59, .72);
-  --surface-control: rgba(15, 23, 42, .82);
-  --ink: #eef6ff;
-  --ink-muted: #94a3b8;
-  --ink-soft: #cbd5e1;
-  --brand-a: #2dd4bf;
-  --brand-b: #f9735c;
-  --brand-c: #f5b84b;
-  --shadow-panel: 0 22px 60px rgba(0, 0, 0, .34);
-  --shadow-soft: 0 12px 28px rgba(0, 0, 0, .22);
+  --theme-line: rgba(111, 107, 255, .28);
+  --theme-soft-line: rgba(255, 255, 255, .075);
+  --theme-ring: rgba(70, 66, 255, .34);
+  --surface: rgba(22, 21, 32, .94);
+  --surface-strong: #1c1b2b;
+  --surface-muted: rgba(39, 38, 58, .82);
+  --surface-control: rgba(13, 13, 22, .86);
+  --ink: #f7f7ff;
+  --ink-muted: #aaa8c8;
+  --ink-soft: #d9d8f5;
+  --brand-a: #4642ff;
+  --brand-b: #736dff;
+  --brand-c: #9d8cff;
+  --shadow-panel: 0 26px 80px rgba(0, 0, 0, .42);
+  --shadow-soft: 0 14px 34px rgba(0, 0, 0, .26);
 }
 body {
-  background: #080b10;
+  background: #08070d;
   color: var(--ink);
 }
 input,
@@ -1420,16 +1422,16 @@ select {
   color: var(--ink);
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, .035);
 }
-input::placeholder { color: #64748b; }
+input::placeholder { color: #73718f; }
 select {
   background-image:
-    linear-gradient(45deg, transparent 50%, #5eead4 50%),
-    linear-gradient(135deg, #5eead4 50%, transparent 50%);
+    linear-gradient(45deg, transparent 50%, #736dff 50%),
+    linear-gradient(135deg, #736dff 50%, transparent 50%);
 }
 pre {
-  border-color: rgba(45, 212, 191, .14);
-  background: #06080d;
-  color: #dbeafe;
+  border-color: rgba(111, 107, 255, .18);
+  background: #08070d;
+  color: #e9e8ff;
 }
 .text-slate-950,
 .text-slate-700,
@@ -1448,9 +1450,9 @@ pre {
 }
 .app-shell {
   background:
-    linear-gradient(180deg, rgba(45, 212, 191, .08), transparent 280px),
-    linear-gradient(120deg, rgba(249, 115, 92, .08), transparent 380px),
-    #080b10;
+    radial-gradient(circle at 64% 10%, rgba(70, 66, 255, .16), transparent 34%),
+    linear-gradient(135deg, rgba(115, 109, 255, .1), transparent 340px),
+    #08070d;
 }
 .app-layout {
   gap: 14px;
@@ -1475,13 +1477,13 @@ pre {
   background: transparent;
 }
 .brand-lockup {
-  background: linear-gradient(180deg, rgba(30, 41, 59, .86), rgba(15, 23, 42, .72));
+  background: linear-gradient(180deg, rgba(31, 30, 45, .94), rgba(18, 17, 28, .82));
   border-bottom-color: var(--theme-soft-line);
 }
 .brand-mark {
-  color: #071014;
-  background: linear-gradient(135deg, #5eead4, #f5b84b);
-  box-shadow: 0 14px 34px rgba(45, 212, 191, .18);
+  color: #fff;
+  background: linear-gradient(135deg, #4642ff, #817bff);
+  box-shadow: 0 14px 34px rgba(70, 66, 255, .24);
 }
 .section-head {
   border-color: var(--theme-soft-line);
@@ -1500,20 +1502,20 @@ pre {
 .icon-btn:hover,
 .btn:hover,
 .device-action:hover {
-  border-color: rgba(45, 212, 191, .42);
-  background: linear-gradient(180deg, rgba(45, 212, 191, .16), rgba(15, 23, 42, .94));
+  border-color: rgba(115, 109, 255, .58);
+  background: linear-gradient(180deg, rgba(70, 66, 255, .24), rgba(16, 15, 28, .94));
   color: #f8ffff;
   transform: translateY(-1px);
 }
 .icon-btn.active {
-  border-color: rgba(45, 212, 191, .62);
-  background: rgba(20, 184, 166, .14);
-  color: #5eead4;
+  border-color: rgba(115, 109, 255, .68);
+  background: rgba(70, 66, 255, .18);
+  color: #b9b5ff;
 }
 .btn {
-  border-color: rgba(45, 212, 191, .36);
-  background: linear-gradient(180deg, #14b8a6, #0f766e);
-  color: #ecfeff;
+  border-color: rgba(115, 109, 255, .5);
+  background: linear-gradient(180deg, #4f46ff, #332dff);
+  color: #fff;
 }
 .btn-secondary {
   border-color: var(--theme-line);
@@ -1526,23 +1528,23 @@ pre {
   color: #fff7ed;
 }
 .btn.is-done {
-  border-color: rgba(94, 234, 212, .46);
-  background: linear-gradient(180deg, #0f766e, #115e59);
+  border-color: rgba(146, 141, 255, .5);
+  background: linear-gradient(180deg, #4642ff, #2d2baf);
 }
 .btn-secondary.is-done {
-  background: rgba(20, 184, 166, .14);
-  color: #99f6e4;
+  background: rgba(70, 66, 255, .16);
+  color: #d7d5ff;
 }
 .status-pill {
-  border-color: rgba(45, 212, 191, .25);
-  background: rgba(20, 184, 166, .12);
-  color: #99f6e4;
+  border-color: rgba(115, 109, 255, .32);
+  background: rgba(70, 66, 255, .16);
+  color: #c7c4ff;
 }
 .settings-modal {
-  background: rgba(2, 6, 23, .72);
+  background: rgba(5, 5, 10, .78);
 }
 .settings-dialog {
-  background: #101724;
+  background: #1c1b2b;
 }
 .settings-grid select {
   background-color: var(--surface-control);
@@ -1554,9 +1556,9 @@ pre {
   color: var(--ink-soft);
 }
 .settings-feedback.success {
-  border-color: rgba(45, 212, 191, .32);
-  background: rgba(20, 184, 166, .12);
-  color: #99f6e4;
+  border-color: rgba(115, 109, 255, .36);
+  background: rgba(70, 66, 255, .14);
+  color: #c7c4ff;
 }
 .settings-feedback.error {
   border-color: rgba(248, 113, 113, .34);
@@ -1569,7 +1571,7 @@ pre {
   color: #fde68a;
 }
 .device-group-title {
-  color: #5eead4;
+  color: #8f89ff;
   letter-spacing: .02em;
 }
 .device {
@@ -1588,16 +1590,16 @@ pre {
   background: rgba(148, 163, 184, .28);
 }
 .device:hover {
-  border-color: rgba(45, 212, 191, .32);
-  background: linear-gradient(180deg, rgba(24, 36, 52, .98), rgba(13, 22, 32, .98));
+  border-color: rgba(115, 109, 255, .36);
+  background: linear-gradient(180deg, rgba(39, 38, 58, .98), rgba(20, 19, 32, .98));
 }
 .device.active {
-  border-color: rgba(45, 212, 191, .62);
-  background: linear-gradient(180deg, rgba(20, 184, 166, .18), rgba(15, 23, 42, .96));
-  outline: 2px solid rgba(45, 212, 191, .18);
+  border-color: rgba(115, 109, 255, .66);
+  background: linear-gradient(180deg, rgba(70, 66, 255, .2), rgba(20, 19, 32, .96));
+  outline: 2px solid rgba(70, 66, 255, .22);
 }
 .device.active::before {
-  background: linear-gradient(180deg, #5eead4, #f5b84b);
+  background: linear-gradient(180deg, #736dff, #4642ff);
 }
 .device strong {
   color: var(--ink);
@@ -1607,61 +1609,349 @@ pre {
   color: var(--ink-soft);
 }
 .device-action.start {
-  border-color: rgba(45, 212, 191, .32);
-  color: #99f6e4;
+  border-color: rgba(115, 109, 255, .34);
+  color: #c7c4ff;
 }
 .device-action.stop {
   border-color: rgba(248, 113, 113, .34);
   color: #fecaca;
 }
 .screen-wrap {
-  border-color: rgba(45, 212, 191, .14);
+  border-color: rgba(111, 107, 255, .18);
   background:
-    linear-gradient(180deg, rgba(15, 23, 42, .2), rgba(0, 0, 0, .34)),
-    #030712;
+    radial-gradient(circle at 50% 15%, rgba(70, 66, 255, .08), transparent 38%),
+    linear-gradient(180deg, rgba(16, 15, 26, .36), rgba(0, 0, 0, .4)),
+    #07070d;
   box-shadow: inset 0 1px 0 rgba(255, 255, 255, .04);
 }
 .empty-screen {
   color: rgba(203, 213, 225, .7);
 }
 .device-nav {
-  border-top-color: rgba(45, 212, 191, .14);
-  background: #0a1019;
+  border-top-color: rgba(111, 107, 255, .18);
+  background: #0b0a12;
 }
 .device-nav button {
   color: #94a3b8;
 }
 .device-nav button:hover {
-  background: rgba(45, 212, 191, .12);
-  color: #ccfbf1;
+  background: rgba(70, 66, 255, .16);
+  color: #d7d5ff;
 }
 .field-band {
   border-color: var(--theme-soft-line);
   background: rgba(15, 23, 42, .5);
 }
 .fullscreen-exit {
-  border-color: rgba(45, 212, 191, .2);
-  background: rgba(2, 6, 23, .78);
-  color: #e0f2fe;
+  border-color: rgba(115, 109, 255, .24);
+  background: rgba(8, 7, 13, .82);
+  color: #ecebff;
 }
 @media (max-width: 920px) {
   .sidebar-backdrop {
     background: rgba(2, 6, 23, .66);
   }
   .workspace-rail {
-    border-color: rgba(45, 212, 191, .16);
+    border-color: rgba(115, 109, 255, .2);
   }
 }
 @media (max-width: 560px) {
   body,
   .app-shell {
-    background: #080b10;
+    background: #08070d;
   }
   .monitor-card,
   .logs-panel,
   .workspace-rail,
   .app-controls {
     border-color: var(--theme-soft-line);
+  }
+}
+
+/* Minimal information layer. Keep controls visible, remove ornamental weight. */
+:root {
+  --theme-line: rgba(111, 107, 255, .24);
+  --theme-soft-line: rgba(255, 255, 255, .075);
+  --surface: #171622;
+  --surface-strong: #1f1e2d;
+  --surface-muted: #202033;
+  --surface-control: #11101b;
+  --ink: #f7f7ff;
+  --ink-muted: #a19fbd;
+  --ink-soft: #d8d6f2;
+  --shadow-panel: none;
+  --shadow-soft: none;
+}
+.app-shell {
+  background:
+    radial-gradient(circle at 68% 8%, rgba(70, 66, 255, .16), transparent 30%),
+    #08070d;
+}
+.app-layout {
+  grid-template-columns: 300px minmax(420px, 1fr);
+  gap: 10px;
+  padding: 10px;
+}
+.workspace-rail,
+.app-controls,
+.monitor-card,
+.settings-dialog {
+  background: var(--surface);
+  box-shadow: none;
+  backdrop-filter: none;
+}
+.logs-panel {
+  display: none;
+  background: var(--surface);
+  box-shadow: none;
+}
+.logs-panel.visible {
+  display: block;
+}
+.workspace-rail,
+.app-controls {
+  min-height: calc(100vh - 20px);
+}
+.app-controls {
+  position: fixed;
+  top: 10px;
+  right: 10px;
+  bottom: 10px;
+  z-index: 58;
+  width: min(320px, calc(100vw - 20px));
+  display: none;
+  overflow: auto;
+}
+.app-controls.open {
+  display: block;
+}
+.brand-lockup,
+.monitor-toolbar {
+  background: transparent;
+}
+.brand-lockup {
+  padding: 14px;
+}
+.brand-mark {
+  width: 32px;
+  height: 32px;
+  border-radius: 7px;
+  box-shadow: none;
+}
+.brand-title {
+  font-size: 15px;
+}
+.panel-section,
+.monitor-card,
+.logs-panel {
+  padding: 12px;
+}
+.section-head,
+.monitor-toolbar {
+  margin-bottom: 10px;
+}
+.monitor-toolbar {
+  padding-bottom: 10px;
+}
+.section-title {
+  font-size: 13px;
+}
+.monitor-title {
+  font-size: 18px;
+}
+.section-kicker,
+.brand-subtitle {
+  display: none;
+}
+#selectedMeta,
+#status {
+  font-size: 11px;
+}
+.status-pill {
+  display: none;
+}
+.toolbar-actions {
+  gap: 6px;
+}
+.icon-btn,
+.btn,
+.device-action {
+  min-height: 36px;
+  border-radius: 7px;
+  background: var(--surface-control);
+  box-shadow: none;
+}
+.icon-btn {
+  width: 36px;
+  height: 36px;
+}
+.btn {
+  padding: 8px 12px;
+  border-color: rgba(115, 109, 255, .42);
+  background: #4642ff;
+}
+.btn-secondary {
+  background: var(--surface-control);
+  border-color: var(--theme-line);
+}
+.btn-danger {
+  border-color: rgba(255, 103, 131, .32);
+  background: #7f1d3a;
+}
+.icon-btn:hover,
+.btn:hover,
+.device-action:hover {
+  transform: none;
+  background: #24233a;
+}
+.device-list,
+.device-group {
+  gap: 6px;
+}
+.device-group + .device-group {
+  margin-top: 10px;
+}
+.device-group-title {
+  font-size: 10px;
+  color: var(--ink-muted);
+}
+.device {
+  min-height: 54px;
+  padding: 10px 10px 10px 12px;
+  background: var(--surface-muted);
+  box-shadow: none;
+}
+.device::before {
+  width: 2px;
+}
+.device-row {
+  align-items: center;
+}
+.device-main {
+  gap: 2px;
+}
+.device strong {
+  font-size: 13px;
+  line-height: 1.2;
+}
+.muted {
+  font-size: 11px;
+}
+.device-action {
+  min-height: 30px;
+  padding: 4px 9px;
+  font-size: 11px;
+}
+.screen-wrap {
+  min-height: min(72vh, 700px);
+  background: #07070d;
+  box-shadow: none;
+}
+#screenCanvas,
+#screenVideo {
+  max-height: min(72vh, 700px);
+}
+.device-nav {
+  height: 40px;
+  background: #0d0c15;
+}
+.field-band {
+  padding: 10px;
+  gap: 8px;
+  background: var(--surface-muted);
+}
+.settings-dialog {
+  width: min(300px, calc(100vw - 32px));
+}
+.settings-grid,
+.settings-actions {
+  gap: 8px;
+}
+.settings-feedback {
+  min-height: 34px;
+  margin-top: 10px;
+}
+@media (max-width: 1240px) {
+  .app-layout {
+    grid-template-columns: 280px minmax(0, 1fr);
+  }
+  .app-controls {
+    min-height: 0;
+  }
+}
+@media (max-width: 920px) {
+  html,
+  body,
+  .app-shell,
+  .app-layout,
+  .monitor-pane,
+  .monitor-card,
+  .app-controls {
+    width: 100%;
+    max-width: 100vw;
+    overflow-x: hidden;
+  }
+  .app-layout {
+    grid-template-columns: minmax(0, 1fr);
+    padding: 0;
+    gap: 0;
+  }
+  .workspace-rail {
+    width: min(82vw, 300px);
+  }
+  .app-controls {
+    top: auto;
+    left: 0;
+    right: 0;
+    bottom: 0;
+    width: 100%;
+    max-height: min(64vh, 420px);
+    min-height: 0;
+    border-radius: 10px 10px 0 0;
+    border-left: 0;
+    border-right: 0;
+    border-bottom: 0;
+  }
+  .monitor-card {
+    border-radius: 0;
+    border-left: 0;
+    border-right: 0;
+  }
+  .screen-wrap,
+  .device-nav {
+    width: 100%;
+    min-width: 0;
+  }
+}
+@media (max-width: 560px) {
+  .monitor-toolbar {
+    gap: 8px;
+  }
+  .toolbar-actions {
+    display: flex;
+    max-width: calc(100vw - 24px);
+    overflow: hidden;
+  }
+  .toolbar-actions .icon-btn {
+    flex: 0 0 40px;
+    width: 40px;
+  }
+  .toolbar-actions .btn {
+    flex: 1 1 0;
+    min-width: 0;
+    width: auto;
+    padding-left: 6px;
+    padding-right: 6px;
+  }
+  .toolbar-actions #settingsOpen {
+    display: none;
+  }
+  .screen-wrap {
+    min-height: 62vh;
+  }
+  #screenCanvas,
+  #screenVideo {
+    max-height: 62vh;
   }
 }
 "#;
@@ -1787,6 +2077,10 @@ function isDeviceRunning(device) {
 function deviceActionLabel(device) {
   return isDeviceRunning(device) ? 'Stop' : 'Start';
 }
+function compactDeviceState(device) {
+  const stateText = device && device.state ? device.state : 'Unknown';
+  return stateText.charAt(0).toUpperCase() + stateText.slice(1);
+}
 async function setDevicePower(device, actionButton) {
   const action = isDeviceRunning(device) ? 'stop' : 'start';
   actionButton.disabled = true;
@@ -1803,8 +2097,8 @@ async function setDevicePower(device, actionButton) {
 function renderDevices() {
   el('devices').innerHTML = '';
   el('selectedMeta').textContent = state.selected
-    ? `${state.selected.name} / ${state.selected.kind} / ${state.selected.id}`
-    : 'Select a device to begin';
+    ? `${state.selected.name} / ${compactDeviceState(state.selected)}`
+    : 'No device selected';
   updateDeviceNav();
   for (const [platform, title] of [['android', 'Android'], ['ios', 'iOS']]) {
     const devices = state.devices.filter(device => devicePlatform(device) === platform);
@@ -1838,11 +2132,8 @@ function renderDevices() {
       name.textContent = device.name;
       const meta = document.createElement('span');
       meta.className = 'muted';
-      meta.textContent = `${device.kind} / ${device.state}`;
-      const id = document.createElement('span');
-      id.className = 'muted';
-      id.textContent = device.id;
-      main.append(name, meta, id);
+      meta.textContent = compactDeviceState(device);
+      main.append(name, meta);
 
       const actions = document.createElement('div');
       actions.className = 'device-actions';
@@ -2294,6 +2585,18 @@ function closeSettings() {
   modal.setAttribute('aria-hidden', 'true');
   el('settingsOpen').focus();
 }
+function openAppPanel() {
+  const panel = el('appPanel');
+  panel.classList.add('open');
+  panel.setAttribute('aria-hidden', 'false');
+  el('appId').focus();
+}
+function closeAppPanel() {
+  const panel = el('appPanel');
+  panel.classList.remove('open');
+  panel.setAttribute('aria-hidden', 'true');
+  el('appOpen').focus();
+}
 function isMobileSidebar() {
   return window.matchMedia('(max-width: 920px)').matches;
 }
@@ -2440,6 +2743,7 @@ async function sendKeyValue(key) {
 }
 async function loadLogs() {
   const res = await api(`/api/devices/${selectedId()}/logs?lines=300`);
+  el('logsPanel').classList.add('visible');
   el('logs').textContent = await res.text();
 }
 function connectWs() {
@@ -2492,9 +2796,12 @@ el('settingsClose').onclick = () => closeSettings();
 el('settingsModal').onclick = event => {
   if (event.target === el('settingsModal')) closeSettings();
 };
+el('appOpen').onclick = () => openAppPanel();
+el('appClose').onclick = () => closeAppPanel();
 document.addEventListener('keydown', event => {
   if (event.key === 'Escape' && document.body.classList.contains('sidebar-open')) closeSidebar();
   if (event.key === 'Escape' && el('settingsModal').classList.contains('open')) closeSettings();
+  if (event.key === 'Escape' && el('appPanel').classList.contains('open')) closeAppPanel();
   if (event.key === 'Escape' && el('screenWrap').classList.contains('fallback-fullscreen')) {
     exitPreviewFullscreen().catch(err => setStatus(err.message));
   }
