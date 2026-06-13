@@ -26,7 +26,8 @@ pub fn ensure_runtime_dependencies() {
 }
 
 fn auto_install_enabled() -> bool {
-    env::var("APPMO_AUTO_INSTALL_DEPS")
+    env::var("APPMON_AUTO_INSTALL_DEPS")
+        .or_else(|_| env::var("APPMO_AUTO_INSTALL_DEPS"))
         .map(|value| {
             !matches!(
                 value.to_ascii_lowercase().as_str(),

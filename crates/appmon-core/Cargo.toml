@@ -1,5 +1,5 @@
 [package]
-name = "appmo-core"
+name = "appmon-core"
 edition.workspace = true
 license.workspace = true
 version.workspace = true

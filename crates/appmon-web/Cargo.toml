@@ -1,5 +1,5 @@
 [package]
-name = "appmo-web"
+name = "appmon-web"
 edition.workspace = true
 license.workspace = true
 version.workspace = true

@@ -493,7 +493,7 @@ impl<R: ProcessRunner> DeviceManager<R> {
 
         match id.kind {
             DeviceKind::Android => {
-                let remote_path = PathBuf::from(format!("/sdcard/appmo-{}.mp4", Uuid::new_v4()));
+                let remote_path = PathBuf::from(format!("/sdcard/appmon-{}.mp4", Uuid::new_v4()));
                 let args = vec![
                     "-s".to_string(),
                     id.raw.clone(),
@@ -513,7 +513,7 @@ impl<R: ProcessRunner> DeviceManager<R> {
             }
             DeviceKind::Ios => {
                 let path = req.output_path.unwrap_or_else(|| {
-                    std::env::temp_dir().join(format!("appmo-ios-{}.mp4", Uuid::new_v4()))
+                    std::env::temp_dir().join(format!("appmon-ios-{}.mp4", Uuid::new_v4()))
                 });
                 let args = vec![
                     "simctl".to_string(),
@@ -730,11 +730,11 @@ impl<R: ProcessRunner> DeviceManager<R> {
             .map(|_| ())
             .map_err(|error| match error {
                 AppError::ToolMissing(_) => AppError::UnsupportedCapability(
-                    "idb is required for full iOS simulator touch control; install fb-idb/idb-companion and set APPMO_IDB_PATH if needed".to_string(),
+                    "idb is required for full iOS simulator touch control; install fb-idb/idb-companion and set APPMON_IDB_PATH if needed".to_string(),
                 ),
                 AppError::Io(error) if error.kind() == std::io::ErrorKind::NotFound => {
                     AppError::UnsupportedCapability(
-                        "idb is required for full iOS simulator touch control; install fb-idb/idb-companion and set APPMO_IDB_PATH if needed".to_string(),
+                        "idb is required for full iOS simulator touch control; install fb-idb/idb-companion and set APPMON_IDB_PATH if needed".to_string(),
                     )
                 }
                 AppError::CommandFailed { stderr, .. }
@@ -817,11 +817,11 @@ impl<R: ProcessRunner> DeviceManager<R> {
         .await
         .map_err(|error| match error {
             AppError::ToolMissing(_) => AppError::UnsupportedCapability(
-                "idb is required for full iOS simulator touch control; install fb-idb/idb-companion and set APPMO_IDB_PATH if needed".to_string(),
+                "idb is required for full iOS simulator touch control; install fb-idb/idb-companion and set APPMON_IDB_PATH if needed".to_string(),
             ),
             AppError::Io(error) if error.kind() == std::io::ErrorKind::NotFound => {
                 AppError::UnsupportedCapability(
-                    "idb is required for full iOS simulator touch control; install fb-idb/idb-companion and set APPMO_IDB_PATH if needed".to_string(),
+                    "idb is required for full iOS simulator touch control; install fb-idb/idb-companion and set APPMON_IDB_PATH if needed".to_string(),
                 )
             }
             other => other,
@@ -840,9 +840,9 @@ tell application "System Events"
   tell process "Simulator"
     set frontmost to true
     set {{x1, y1, x2, y2}} to bounds of window 1
-    set appmoX to x1 + (((x2 - x1) * {x}) / {source_width})
-    set appmoY to y1 + (((y2 - y1) * {y}) / {source_height})
-    click at {{appmoX as integer, appmoY as integer}}
+    set appmonX to x1 + (((x2 - x1) * {x}) / {source_width})
+    set appmonY to y1 + (((y2 - y1) * {y}) / {source_height})
+    click at {{appmonX as integer, appmonY as integer}}
   end tell
 end tell"#,
             x = req.x,

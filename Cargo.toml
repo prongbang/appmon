@@ -1,8 +1,8 @@
 [workspace]
 members = [
-    "crates/appmo-core",
-    "crates/appmo-server",
-    "crates/appmo-web",
+    "crates/appmon-core",
+    "crates/appmon-server",
+    "crates/appmon-web",
 ]
 resolver = "2"
 

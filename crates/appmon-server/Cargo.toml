@@ -1,12 +1,12 @@
 [package]
-name = "appmo-server"
+name = "appmon-server"
 edition.workspace = true
 license.workspace = true
 version.workspace = true
 
 [dependencies]
-appmo-core = { path = "../appmo-core" }
-appmo-web = { path = "../appmo-web" }
+appmon-core = { path = "../appmon-core" }
+appmon-web = { path = "../appmon-web" }
 anyhow.workspace = true
 axum.workspace = true
 base64.workspace = true

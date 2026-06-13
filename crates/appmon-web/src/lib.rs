@@ -10,7 +10,7 @@ pub fn dashboard_html() -> String {
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>Appmo</title>
+  <title>Appmon</title>
   <style>"#,
     );
     html.push_str(TAILWIND_THEME_CSS);
@@ -41,7 +41,7 @@ fn App() -> Element {
                     div { class: "brand-lockup",
                         div { class: "brand-mark", "A" }
                         div {
-                            h1 { class: "brand-title", "Appmo" }
+                            h1 { class: "brand-title", "Appmon" }
                         }
                     }
                     DevicesPane {}
@@ -2305,7 +2305,7 @@ async function startWebRtcDataStream(seq) {
   const peer = new RTCPeerConnection({
     iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
   });
-  const channel = peer.createDataChannel('appmo-preview', {
+  const channel = peer.createDataChannel('appmon-preview', {
     ordered: false,
     maxRetransmits: 0
   });

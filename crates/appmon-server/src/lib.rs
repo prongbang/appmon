@@ -1,4 +1,4 @@
-use appmo_core::{
+use appmon_core::{
     AppError, AppInstallRequest, AppLaunchRequest, AppTerminateRequest, DeviceId, DeviceKind,
     DeviceManager, KeyRequest, LogRequest, ProcessRunner, RecordRequest, SwipeRequest, TapRequest,
     TextRequest,
@@ -95,7 +95,7 @@ pub fn build_router<R: ProcessRunner + Clone>(controller: DeviceManager<R>) -> R
 }
 
 async fn index() -> Html<String> {
-    Html(appmo_web::dashboard_html().to_string())
+    Html(appmon_web::dashboard_html().to_string())
 }
 
 async fn health() -> Json<serde_json::Value> {
@@ -160,7 +160,7 @@ async fn screenshot_stream<R: ProcessRunner + Clone>(
     let quality = req.quality.unwrap_or(70).clamp(35, 95);
     let frame_delay = Duration::from_millis(1_000 / u64::from(fps));
     let controller = state.controller.clone();
-    let boundary = "appmo-frame";
+    let boundary = "appmon-frame";
     let body_stream = stream::unfold(
         (controller, id, None::<Instant>),
         move |(controller, id, last_frame)| {
@@ -313,8 +313,8 @@ async fn webrtc_offer<R: ProcessRunner + Clone>(
                 mime_type: MIME_TYPE_VP8.to_string(),
                 ..Default::default()
             },
-            "appmo-video".to_string(),
-            "appmo-preview".to_string(),
+            "appmon-video".to_string(),
+            "appmon-preview".to_string(),
         ));
         let _sender = peer_connection
             .add_track(Arc::clone(&track) as Arc<_>)
@@ -341,7 +341,7 @@ async fn webrtc_offer<R: ProcessRunner + Clone>(
             let peer_connection = Arc::clone(&peer_for_channel);
             let stream_format = stream_format.clone();
             Box::pin(async move {
-                if data_channel.label() == "appmo-preview" {
+                if data_channel.label() == "appmon-preview" {
                     tokio::spawn(send_webrtc_preview(
                         controller,
                         id,
@@ -827,7 +827,7 @@ async fn ws_handler<R: ProcessRunner + Clone>(
 
 async fn handle_socket<R: ProcessRunner + Clone>(mut socket: WebSocket, state: AppState<R>) {
     let _ = socket
-        .send(Message::Text("Appmo WebSocket connected".to_string()))
+        .send(Message::Text("Appmon WebSocket connected".to_string()))
         .await;
     while let Some(Ok(message)) = socket.recv().await {
         match message {
@@ -920,7 +920,7 @@ pub async fn run_udp_control<R: ProcessRunner + Clone>(
     bind: SocketAddr,
 ) -> std::io::Result<()> {
     let socket = UdpSocket::bind(bind).await?;
-    info!(%bind, "appmo udp control listening");
+    info!(%bind, "appmon udp control listening");
     let state = AppState {
         controller,
         webrtc_sessions: Arc::new(Mutex::new(HashMap::new())),
@@ -1089,7 +1089,7 @@ impl IntoResponse for ApiError {
 mod tests {
     use std::{path::Path, sync::Arc};
 
-    use appmo_core::{AppConfig, AppResult, CommandOutput};
+    use appmon_core::{AppConfig, AppResult, CommandOutput};
     use async_trait::async_trait;
     use axum::{body::Body, http::Request};
     use tokio::sync::Mutex;
