@@ -1,6 +1,7 @@
 use appmo_core::{
-    AppError, AppInstallRequest, AppLaunchRequest, AppTerminateRequest, DeviceId, DeviceManager,
-    KeyRequest, LogRequest, ProcessRunner, RecordRequest, SwipeRequest, TapRequest, TextRequest,
+    AppError, AppInstallRequest, AppLaunchRequest, AppTerminateRequest, DeviceId, DeviceKind,
+    DeviceManager, KeyRequest, LogRequest, ProcessRunner, RecordRequest, SwipeRequest, TapRequest,
+    TextRequest,
 };
 use axum::{
     body::Body,
@@ -21,16 +22,25 @@ use std::{
     collections::HashMap,
     convert::Infallible,
     net::SocketAddr,
+    process::Stdio,
     sync::Arc,
     time::{Duration, Instant},
 };
-use tokio::{net::UdpSocket, sync::Mutex};
+use tokio::{
+    io::{AsyncReadExt, AsyncWriteExt},
+    net::UdpSocket,
+    process::Command,
+    sync::Mutex,
+};
 use tower_http::trace::TraceLayer;
 use tracing::{error, info, warn};
 use uuid::Uuid;
+use webrtc::media::Sample;
 use webrtc::{
     api::{
-        interceptor_registry::register_default_interceptors, media_engine::MediaEngine, APIBuilder,
+        interceptor_registry::register_default_interceptors,
+        media_engine::{MediaEngine, MIME_TYPE_VP8},
+        APIBuilder,
     },
     data_channel::{data_channel_state::RTCDataChannelState, RTCDataChannel},
     ice_transport::ice_server::RTCIceServer,
@@ -39,6 +49,8 @@ use webrtc::{
         configuration::RTCConfiguration, peer_connection_state::RTCPeerConnectionState,
         sdp::session_description::RTCSessionDescription, RTCPeerConnection,
     },
+    rtp_transceiver::rtp_codec::RTCRtpCodecCapability,
+    track::track_local::track_local_static_sample::TrackLocalStaticSample,
 };
 
 #[derive(Clone)]
@@ -64,6 +76,8 @@ pub fn build_router<R: ProcessRunner + Clone>(controller: DeviceManager<R>) -> R
         .route("/devices/:id/input/swipe", post(swipe::<R>))
         .route("/devices/:id/input/text", post(text::<R>))
         .route("/devices/:id/key", post(key::<R>))
+        .route("/devices/:id/start", post(start_device::<R>))
+        .route("/devices/:id/stop", post(stop_device::<R>))
         .route("/devices/:id/app/install", post(install::<R>))
         .route("/devices/:id/app/launch", post(launch::<R>))
         .route("/devices/:id/app/terminate", post(terminate::<R>))
@@ -116,6 +130,24 @@ async fn screenshot<R: ProcessRunner + Clone>(
         .into_response())
 }
 
+async fn start_device<R: ProcessRunner + Clone>(
+    State(state): State<AppState<R>>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let id = DeviceId::parse(&id)?;
+    state.controller.start_device(&id).await?;
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
+async fn stop_device<R: ProcessRunner + Clone>(
+    State(state): State<AppState<R>>,
+    Path(id): Path<String>,
+) -> Result<Json<serde_json::Value>, ApiError> {
+    let id = DeviceId::parse(&id)?;
+    state.controller.stop_device(&id).await?;
+    Ok(Json(serde_json::json!({ "ok": true })))
+}
+
 async fn screenshot_stream<R: ProcessRunner + Clone>(
     State(state): State<AppState<R>>,
     Path(id): Path<String>,
@@ -146,7 +178,10 @@ async fn screenshot_stream<R: ProcessRunner + Clone>(
                         let encode_jpeg = match stream_format.as_str() {
                             "jpeg" => true,
                             "native" => false,
-                            _ => screenshot.content_type != "image/jpeg",
+                            _ => {
+                                id.kind != DeviceKind::Android
+                                    && screenshot.content_type != "image/jpeg"
+                            }
                         };
                         let frame = if encode_jpeg {
                             encode_stream_frame(&screenshot.bytes, max_width, quality)
@@ -214,10 +249,18 @@ fn encode_stream_frame(
 #[derive(Debug, Deserialize)]
 struct WebRtcOfferRequest {
     offer: RTCSessionDescription,
+    transport: Option<WebRtcTransport>,
     fps: Option<u32>,
     format: Option<String>,
     max_width: Option<u32>,
     quality: Option<u8>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "snake_case")]
+enum WebRtcTransport {
+    Data,
+    Media,
 }
 
 #[derive(Debug, Serialize)]
@@ -240,6 +283,7 @@ async fn webrtc_offer<R: ProcessRunner + Clone>(
     let max_width = req.max_width.unwrap_or(720).clamp(240, 4096);
     let quality = req.quality.unwrap_or(70).clamp(35, 95);
     let session_id = Uuid::new_v4();
+    let transport = req.transport.unwrap_or(WebRtcTransport::Data);
 
     let mut media_engine = MediaEngine::default();
     media_engine
@@ -263,30 +307,57 @@ async fn webrtc_offer<R: ProcessRunner + Clone>(
         .map_err(webrtc_api_error)?,
     );
 
-    let controller = state.controller.clone();
-    let peer_for_channel = Arc::clone(&peer_connection);
-    peer_connection.on_data_channel(Box::new(move |data_channel| {
-        let controller = controller.clone();
-        let id = id.clone();
-        let peer_connection = Arc::clone(&peer_for_channel);
-        let stream_format = stream_format.clone();
-        Box::pin(async move {
-            if data_channel.label() == "appmo-preview" {
-                tokio::spawn(send_webrtc_preview(
-                    controller,
-                    id,
-                    data_channel,
-                    peer_connection,
-                    WebRtcStreamSettings {
-                        fps,
-                        stream_format,
-                        max_width,
-                        quality,
-                    },
-                ));
-            }
-        })
-    }));
+    if transport == WebRtcTransport::Media {
+        let track = Arc::new(TrackLocalStaticSample::new(
+            RTCRtpCodecCapability {
+                mime_type: MIME_TYPE_VP8.to_string(),
+                ..Default::default()
+            },
+            "appmo-video".to_string(),
+            "appmo-preview".to_string(),
+        ));
+        let _sender = peer_connection
+            .add_track(Arc::clone(&track) as Arc<_>)
+            .await
+            .map_err(webrtc_api_error)?;
+        tokio::spawn(send_webrtc_video_preview(
+            state.controller.clone(),
+            id.clone(),
+            track,
+            Arc::clone(&peer_connection),
+            WebRtcStreamSettings {
+                fps,
+                stream_format: stream_format.clone(),
+                max_width,
+                quality,
+            },
+        ));
+    } else {
+        let controller = state.controller.clone();
+        let peer_for_channel = Arc::clone(&peer_connection);
+        peer_connection.on_data_channel(Box::new(move |data_channel| {
+            let controller = controller.clone();
+            let id = id.clone();
+            let peer_connection = Arc::clone(&peer_for_channel);
+            let stream_format = stream_format.clone();
+            Box::pin(async move {
+                if data_channel.label() == "appmo-preview" {
+                    tokio::spawn(send_webrtc_preview(
+                        controller,
+                        id,
+                        data_channel,
+                        peer_connection,
+                        WebRtcStreamSettings {
+                            fps,
+                            stream_format,
+                            max_width,
+                            quality,
+                        },
+                    ));
+                }
+            })
+        }));
+    }
 
     let sessions = Arc::clone(&state.webrtc_sessions);
     peer_connection.on_peer_connection_state_change(Box::new(move |connection_state| {
@@ -340,6 +411,204 @@ struct WebRtcStreamSettings {
     quality: u8,
 }
 
+async fn send_webrtc_video_preview<R: ProcessRunner + Clone>(
+    controller: DeviceManager<R>,
+    id: DeviceId,
+    track: Arc<TrackLocalStaticSample>,
+    peer_connection: Arc<RTCPeerConnection>,
+    settings: WebRtcStreamSettings,
+) {
+    if let Err(error) = run_vp8_encoder_preview(
+        controller,
+        id.clone(),
+        track,
+        Arc::clone(&peer_connection),
+        settings,
+    )
+    .await
+    {
+        warn!(device = %id.web_id(), %error, "WebRTC video preview stopped");
+    }
+    let _ = peer_connection.close().await;
+}
+
+async fn run_vp8_encoder_preview<R: ProcessRunner + Clone>(
+    controller: DeviceManager<R>,
+    id: DeviceId,
+    track: Arc<TrackLocalStaticSample>,
+    peer_connection: Arc<RTCPeerConnection>,
+    settings: WebRtcStreamSettings,
+) -> Result<(), String> {
+    let frame_delay = Duration::from_millis(1_000 / u64::from(settings.fps));
+    let connect_started = Instant::now();
+    loop {
+        match peer_connection.connection_state() {
+            RTCPeerConnectionState::Connected => break,
+            RTCPeerConnectionState::Failed
+            | RTCPeerConnectionState::Closed
+            | RTCPeerConnectionState::Disconnected => {
+                return Err("WebRTC video connection closed before encoder start".to_string())
+            }
+            _ if connect_started.elapsed() > Duration::from_secs(8) => {
+                return Err("WebRTC video connection timed out".to_string())
+            }
+            _ => tokio::time::sleep(Duration::from_millis(20)).await,
+        }
+    }
+
+    let mut child = Command::new("ffmpeg")
+        .args([
+            "-hide_banner",
+            "-loglevel",
+            "error",
+            "-fflags",
+            "nobuffer",
+            "-flags",
+            "low_delay",
+            "-f",
+            "mjpeg",
+            "-framerate",
+            &settings.fps.to_string(),
+            "-i",
+            "pipe:0",
+            "-an",
+            "-c:v",
+            "libvpx",
+            "-deadline",
+            "realtime",
+            "-cpu-used",
+            "8",
+            "-lag-in-frames",
+            "0",
+            "-auto-alt-ref",
+            "0",
+            "-error-resilient",
+            "1",
+            "-g",
+            "30",
+            "-quality",
+            "realtime",
+            "-f",
+            "ivf",
+            "pipe:1",
+        ])
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .spawn()
+        .map_err(|error| format!("failed to start ffmpeg: {error}"))?;
+
+    let mut stdin = child
+        .stdin
+        .take()
+        .ok_or_else(|| "ffmpeg stdin is unavailable".to_string())?;
+    let mut stdout = child
+        .stdout
+        .take()
+        .ok_or_else(|| "ffmpeg stdout is unavailable".to_string())?;
+
+    let writer_id = id.clone();
+    let writer_peer = Arc::clone(&peer_connection);
+    let writer_settings = settings.clone();
+    let writer = async move {
+        loop {
+            if matches!(
+                writer_peer.connection_state(),
+                RTCPeerConnectionState::Failed
+                    | RTCPeerConnectionState::Closed
+                    | RTCPeerConnectionState::Disconnected
+            ) {
+                break;
+            }
+            let frame_started = Instant::now();
+            let screenshot = controller
+                .screenshot(&writer_id)
+                .await
+                .map_err(|error| error.to_string())?;
+            let jpeg = prepare_video_jpeg_frame(
+                screenshot.content_type,
+                screenshot.bytes,
+                writer_settings.max_width,
+                writer_settings.quality,
+            )
+            .map_err(|error| error.to_string())?;
+            stdin
+                .write_all(&jpeg)
+                .await
+                .map_err(|error| format!("ffmpeg stdin write failed: {error}"))?;
+            stdin
+                .flush()
+                .await
+                .map_err(|error| format!("ffmpeg stdin flush failed: {error}"))?;
+            let elapsed = frame_started.elapsed();
+            if elapsed < frame_delay {
+                tokio::time::sleep(frame_delay - elapsed).await;
+            }
+        }
+        Ok::<(), String>(())
+    };
+
+    let reader = async move {
+        let mut file_header = [0_u8; 32];
+        stdout
+            .read_exact(&mut file_header)
+            .await
+            .map_err(|error| format!("ffmpeg ivf header read failed: {error}"))?;
+        loop {
+            let mut frame_header = [0_u8; 12];
+            stdout
+                .read_exact(&mut frame_header)
+                .await
+                .map_err(|error| format!("ffmpeg ivf frame header read failed: {error}"))?;
+            let frame_len = u32::from_le_bytes([
+                frame_header[0],
+                frame_header[1],
+                frame_header[2],
+                frame_header[3],
+            ]) as usize;
+            if frame_len == 0 || frame_len > 8 * 1024 * 1024 {
+                return Err(format!(
+                    "ffmpeg emitted invalid VP8 frame length: {frame_len}"
+                ));
+            }
+            let mut frame = vec![0_u8; frame_len];
+            stdout
+                .read_exact(&mut frame)
+                .await
+                .map_err(|error| format!("ffmpeg ivf frame read failed: {error}"))?;
+            track
+                .write_sample(&Sample {
+                    data: Bytes::from(frame),
+                    duration: frame_delay,
+                    ..Default::default()
+                })
+                .await
+                .map_err(|error| format!("WebRTC video sample write failed: {error}"))?;
+        }
+    };
+
+    tokio::select! {
+        result = writer => result?,
+        result = reader => result?,
+    }
+
+    let _ = child.kill().await;
+    Ok(())
+}
+
+fn prepare_video_jpeg_frame(
+    content_type: &str,
+    bytes: Vec<u8>,
+    max_width: u32,
+    quality: u8,
+) -> Result<Vec<u8>, image::ImageError> {
+    if content_type == "image/jpeg" && max_width >= 4096 {
+        Ok(bytes)
+    } else {
+        encode_stream_frame(&bytes, max_width, quality).map(|(_, bytes)| bytes)
+    }
+}
+
 async fn send_webrtc_preview<R: ProcessRunner + Clone>(
     controller: DeviceManager<R>,
     id: DeviceId,
@@ -377,7 +646,7 @@ async fn send_webrtc_preview<R: ProcessRunner + Clone>(
                 let encode_jpeg = match settings.stream_format.as_str() {
                     "jpeg" => true,
                     "native" => false,
-                    _ => screenshot.content_type != "image/jpeg",
+                    _ => id.kind != DeviceKind::Android && screenshot.content_type != "image/jpeg",
                 };
                 let frame = if encode_jpeg {
                     encode_stream_frame(&screenshot.bytes, settings.max_width, settings.quality)
@@ -864,6 +1133,7 @@ mod tests {
             bind: "127.0.0.1:0".parse().unwrap(),
             udp_bind: None,
             adb_path: "/bin/echo".into(),
+            emulator_path: "/bin/echo".into(),
             xcrun_path: "/bin/echo".into(),
             osascript_path: "/bin/echo".into(),
             idb_path: "/bin/echo".into(),

@@ -293,6 +293,75 @@ impl<R: ProcessRunner> DeviceManager<R> {
         Ok(())
     }
 
+    pub async fn start_device(&self, id: &DeviceId) -> AppResult<()> {
+        match id.kind {
+            DeviceKind::Android => {
+                Command::new(&self.config.emulator_path)
+                    .args(["-avd", &id.raw])
+                    .stdin(Stdio::null())
+                    .stdout(Stdio::null())
+                    .stderr(Stdio::null())
+                    .spawn()?;
+                info!(device = %id.raw, "android emulator start requested");
+            }
+            DeviceKind::Ios => {
+                let args = vec!["simctl".to_string(), "boot".to_string(), id.raw.clone()];
+                match self
+                    .run_logged("ios_boot", &self.config.xcrun_path, &args)
+                    .await
+                {
+                    Err(AppError::CommandFailed { stderr, .. })
+                        if stderr.contains("current state: Booted")
+                            || stderr
+                                .contains("Unable to boot device in current state: Booted") =>
+                    {
+                        info!(device = %id.raw, "iOS simulator already booted");
+                    }
+                    other => {
+                        other?;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
+    pub async fn stop_device(&self, id: &DeviceId) -> AppResult<()> {
+        match id.kind {
+            DeviceKind::Android => {
+                let args = vec![
+                    "-s".to_string(),
+                    id.raw.clone(),
+                    "emu".to_string(),
+                    "kill".to_string(),
+                ];
+                self.run_logged("android_emulator_stop", &self.config.adb_path, &args)
+                    .await?;
+                self.android_inputs.lock().await.remove(&id.raw);
+            }
+            DeviceKind::Ios => {
+                let args = vec!["simctl".to_string(), "shutdown".to_string(), id.raw.clone()];
+                match self
+                    .run_logged("ios_shutdown", &self.config.xcrun_path, &args)
+                    .await
+                {
+                    Err(AppError::CommandFailed { stderr, .. })
+                        if stderr.contains("current state: Shutdown")
+                            || stderr.contains(
+                                "Unable to shutdown device in current state: Shutdown",
+                            ) =>
+                    {
+                        info!(device = %id.raw, "iOS simulator already shutdown");
+                    }
+                    other => {
+                        other?;
+                    }
+                }
+            }
+        }
+        Ok(())
+    }
+
     pub async fn install(&self, id: &DeviceId, req: AppInstallRequest) -> AppResult<()> {
         validation::readable_file(&req.path)?;
         match id.kind {
@@ -483,7 +552,15 @@ impl<R: ProcessRunner> DeviceManager<R> {
         let output = self
             .run_logged("android_list", &self.config.adb_path, &args)
             .await?;
-        Ok(parse_adb_devices(&String::from_utf8_lossy(&output.stdout)))
+        let mut devices = parse_adb_devices(&String::from_utf8_lossy(&output.stdout));
+        let avd_args = vec!["-list-avds".to_string()];
+        if let Ok(output) = self
+            .run_logged("android_avd_list", &self.config.emulator_path, &avd_args)
+            .await
+        {
+            devices.extend(parse_android_avds(&String::from_utf8_lossy(&output.stdout)));
+        }
+        Ok(devices)
     }
 
     async fn list_ios_devices(&self) -> AppResult<Vec<Device>> {
@@ -964,9 +1041,6 @@ pub fn parse_adb_devices(input: &str) -> Vec<Device> {
             let mut parts = line.split_whitespace();
             let serial = parts.next()?;
             let state = parts.next()?;
-            if state != "device" {
-                return None;
-            }
             let details = parts.map(ToString::to_string).collect::<Vec<_>>();
             let name = details
                 .iter()
@@ -983,6 +1057,29 @@ pub fn parse_adb_devices(input: &str) -> Vec<Device> {
                 name,
                 state: state.to_string(),
                 details,
+            })
+        })
+        .collect()
+}
+
+pub fn parse_android_avds(input: &str) -> Vec<Device> {
+    input
+        .lines()
+        .filter_map(|line| {
+            let avd = line.trim();
+            if avd.is_empty() {
+                return None;
+            }
+            Some(Device {
+                id: DeviceId {
+                    kind: DeviceKind::Android,
+                    raw: avd.to_string(),
+                }
+                .web_id(),
+                kind: DeviceKind::Android,
+                name: avd.replace('_', " "),
+                state: "Shutdown".to_string(),
+                details: vec!["avd".to_string()],
             })
         })
         .collect()
@@ -1010,7 +1107,7 @@ pub fn parse_simctl_devices(input: &[u8]) -> AppResult<Vec<Device>> {
         .into_iter()
         .flat_map(|(runtime, devices)| {
             devices.into_iter().filter_map(move |device| {
-                if device.state != "Booted" || device.is_available == Some(false) {
+                if device.is_available == Some(false) {
                     return None;
                 }
                 let mut details = vec![runtime.clone()];
@@ -1042,24 +1139,39 @@ mod tests {
     fn parses_adb_devices() {
         let input = "List of devices attached\nemulator-5554 device product:sdk model:Pixel_8 device:emu\nabc offline\n";
         let devices = parse_adb_devices(input);
-        assert_eq!(devices.len(), 1);
+        assert_eq!(devices.len(), 2);
         assert_eq!(devices[0].id, "android:emulator-5554");
         assert_eq!(devices[0].name, "Pixel 8");
+        assert_eq!(devices[1].id, "android:abc");
+        assert_eq!(devices[1].state, "offline");
     }
 
     #[test]
-    fn parses_simctl_booted_devices() {
+    fn parses_android_avds() {
+        let devices = parse_android_avds("Pixel_8_API_35\nTablet API 35\n\n");
+        assert_eq!(devices.len(), 2);
+        assert_eq!(devices[0].id, "android:Pixel_8_API_35");
+        assert_eq!(devices[0].name, "Pixel 8 API 35");
+        assert_eq!(devices[0].state, "Shutdown");
+        assert_eq!(devices[0].details, ["avd"]);
+    }
+
+    #[test]
+    fn parses_simctl_available_devices() {
         let input = br#"{
           "devices": {
             "com.apple.CoreSimulator.SimRuntime.iOS-17-5": [
               {"name":"iPhone 15","udid":"A-B-C","state":"Booted","isAvailable":true},
-              {"name":"iPhone 14","udid":"D-E-F","state":"Shutdown","isAvailable":true}
+              {"name":"iPhone 14","udid":"D-E-F","state":"Shutdown","isAvailable":true},
+              {"name":"iPhone 13","udid":"G-H-I","state":"Shutdown","isAvailable":false}
             ]
           }
         }"#;
         let devices = parse_simctl_devices(input).unwrap();
-        assert_eq!(devices.len(), 1);
+        assert_eq!(devices.len(), 2);
         assert_eq!(devices[0].id, "ios:A-B-C");
+        assert_eq!(devices[1].id, "ios:D-E-F");
+        assert_eq!(devices[1].state, "Shutdown");
     }
 
     #[test]

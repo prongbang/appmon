@@ -11,8 +11,8 @@ cargo run -p appmo-server
 
 On startup Appmo checks the local control tools and auto-installs missing
 developer dependencies when possible. It can install Android platform tools with
-Homebrew, plus `idb-companion` and `fb-idb` for iOS full touch control. Disable
-this bootstrap with:
+Homebrew, plus `idb-companion` and `fb-idb` for iOS full touch control, and
+`ffmpeg` for WebRTC video preview. Disable this bootstrap with:
 
 ```sh
 APPMO_AUTO_INSTALL_DEPS=false cargo run -p appmo-server
@@ -56,12 +56,12 @@ control, but swipe/text/key need `idb` for full fidelity.
 
 Screen preview defaults to the conservative one-shot screenshot path with
 adaptive polling, adjustable FPS, preloaded image swaps, and no overlapping
-fetches so control commands keep room to run. For smoother interactive preview,
-choose WebRTC mode: Appmo negotiates a local `RTCPeerConnection`, sends encoded
-screenshot frames over an unreliable `appmo-preview` data channel, chunks large
-frames safely, and reuses the same preloaded image swap path in the browser.
-If WebRTC negotiation fails, the UI falls back to the Rust-served multipart
-stream automatically. `format=auto` keeps iOS simulator JPEG frames native while
-converting larger Android PNG screenshots to scaled JPEG frames. Use
-`format=native` for lowest server CPU or `format=jpeg` when bandwidth is the
-bottleneck.
+fetches so control commands keep room to run. For lowest-latency interactive
+preview, choose WebRTC mode: Appmo first negotiates a VP8 media track so the
+browser can use its native video decoder, with `ffmpeg` running as a persistent
+realtime encoder. If media-track negotiation or encoding is unavailable, Appmo
+falls back to the WebRTC `appmo-preview` data channel, then to the Rust-served
+multipart stream. `format=auto` keeps iOS simulator JPEG frames native for
+fallback paths while converting larger Android PNG screenshots to scaled JPEG
+frames. Use `format=native` for lowest server CPU or `format=jpeg` when
+bandwidth is the bottleneck.

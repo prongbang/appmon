@@ -22,6 +22,7 @@ pub fn ensure_runtime_dependencies() {
 
     ensure_android_tools();
     ensure_ios_tools();
+    ensure_media_tools();
 }
 
 fn auto_install_enabled() -> bool {
@@ -63,6 +64,16 @@ fn ensure_ios_tools() {
         if let Err(error) = install_idb() {
             warn!(%error, "could not auto-install idb; iOS full touch control will need manual setup");
         }
+    }
+}
+
+fn ensure_media_tools() {
+    if program_available("ffmpeg") {
+        return;
+    }
+
+    if let Err(error) = run_brew(["install", "ffmpeg"]) {
+        warn!(%error, "could not auto-install ffmpeg; WebRTC video preview will fall back to data-channel streaming");
     }
 }
 

@@ -49,6 +49,7 @@ fn App() -> Element {
                 }
                 MonitorPane {}
                 AppControls {}
+                div { id: "sidebarBackdrop", class: "sidebar-backdrop", aria_hidden: "true" }
             }
         }
     }
@@ -67,6 +68,16 @@ fn DevicesPane() -> Element {
                     span { class: "refresh-icon" }
                 }
             }
+            div { class: "device-selectors",
+                div { class: "device-select-field",
+                    label { r#for: "androidDeviceSelect", "Android" }
+                    select { id: "androidDeviceSelect", aria_label: "Select Android device" }
+                }
+                div { class: "device-select-field",
+                    label { r#for: "iosDeviceSelect", "iOS" }
+                    select { id: "iosDeviceSelect", aria_label: "Select iOS device" }
+                }
+            }
             div { id: "devices", class: "device-list" }
         }
     }
@@ -78,9 +89,14 @@ fn MonitorPane() -> Element {
         section { class: "monitor-pane",
             div { class: "monitor-card",
                 div { class: "monitor-toolbar",
-                    div {
-                        h2 { class: "monitor-title", "Monitor" }
-                        span { id: "selectedMeta", class: "text-xs text-slate-500", "Select a device to begin" }
+                    div { class: "monitor-heading",
+                        button { id: "sidebarToggle", class: "icon-btn mobile-sidebar-toggle", title: "Open devices", aria_label: "Open devices", aria_expanded: "false", aria_controls: "devices",
+                            span { class: "hamburger-icon" }
+                        }
+                        div {
+                            h2 { class: "monitor-title", "Monitor" }
+                            span { id: "selectedMeta", class: "text-xs text-slate-500", "Select a device to begin" }
+                        }
                     }
                     div { class: "toolbar-actions",
                         span { id: "statusChip", class: "status-pill", "Idle" }
@@ -91,8 +107,12 @@ fn MonitorPane() -> Element {
                     }
                 }
                 div { id: "screenWrap", class: "screen-wrap",
-                    img { id: "screen", alt: "Device screenshot" }
+                    canvas { id: "screenCanvas", aria_label: "Device screenshot preview" }
+                    video { id: "screenVideo", autoplay: true, muted: true, playsinline: true, controls: false, aria_label: "Device video preview" }
                     div { id: "screenEmpty", class: "empty-screen", "Select a device" }
+                    button { id: "fullscreenExit", class: "fullscreen-exit", title: "Exit fullscreen", aria_label: "Exit fullscreen",
+                        span { class: "close-icon" }
+                    }
                 }
                 DeviceNav {}
                 p { id: "status", class: "mt-3 min-h-5 text-xs text-slate-700" }
@@ -155,6 +175,7 @@ fn PreviewSettingsModal() -> Element {
                         option { value: "85", "Sharp" }
                     }
                 }
+                div { id: "settingsFeedback", class: "settings-feedback", role: "status", aria_live: "polite", "Ready" }
                 div { class: "settings-actions",
                     button { id: "shot", class: "btn btn-secondary", "Screenshot" }
                     button { id: "logsBtn", class: "btn btn-secondary", "Logs" }
@@ -482,10 +503,34 @@ pre {
   bottom: 0;
   border-width: 0 2px 2px 0;
 }
+.hamburger-icon {
+  width: 18px;
+  height: 14px;
+  position: relative;
+  display: block;
+  border-top: 2px solid currentColor;
+  border-bottom: 2px solid currentColor;
+}
+.hamburger-icon::after {
+  content: "";
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 4px;
+  height: 2px;
+  border-radius: 999px;
+  background: currentColor;
+}
+.mobile-sidebar-toggle,
+.sidebar-backdrop {
+  display: none;
+}
 .screen-wrap:fullscreen,
-.screen-wrap:-webkit-full-screen {
+.screen-wrap:-webkit-full-screen,
+.screen-wrap.fallback-fullscreen {
   width: 100vw;
   height: 100vh;
+  height: 100dvh;
   border: 0;
   border-radius: 0;
   display: flex;
@@ -493,10 +538,43 @@ pre {
   justify-content: center;
   background: #090d14;
 }
-.screen-wrap:fullscreen #screen,
-.screen-wrap:-webkit-full-screen #screen {
+.screen-wrap.fallback-fullscreen {
+  position: fixed;
+  inset: 0;
+  z-index: 1000;
+}
+.fullscreen-exit {
+  position: absolute;
+  top: max(14px, env(safe-area-inset-top));
+  right: max(14px, env(safe-area-inset-right));
+  z-index: 1001;
+  width: 42px;
+  height: 42px;
+  display: none;
+  place-items: center;
+  border: 1px solid rgba(255, 255, 255, .18);
+  border-radius: var(--theme-radius);
+  background: rgba(15, 23, 42, .72);
+  color: var(--tw-white);
+  box-shadow: 0 14px 34px rgba(0, 0, 0, .28);
+}
+.screen-wrap:fullscreen .fullscreen-exit,
+.screen-wrap:-webkit-full-screen .fullscreen-exit,
+.screen-wrap.fallback-fullscreen .fullscreen-exit {
+  display: grid;
+}
+.screen-wrap:fullscreen #screenCanvas,
+.screen-wrap:fullscreen #screenVideo,
+.screen-wrap:-webkit-full-screen #screenCanvas,
+.screen-wrap:-webkit-full-screen #screenVideo,
+.screen-wrap.fallback-fullscreen #screenCanvas,
+.screen-wrap.fallback-fullscreen #screenVideo {
   max-width: 100%;
   max-height: 100%;
+}
+body.preview-fullscreen-lock {
+  overflow: hidden;
+  touch-action: none;
 }
 .monitor-pane {
   min-width: 0;
@@ -522,6 +600,12 @@ pre {
   justify-content: space-between;
   gap: 14px;
   margin-bottom: 12px;
+}
+.monitor-heading {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  min-width: 0;
 }
 .monitor-title {
   margin: 0 0 2px;
@@ -565,6 +649,37 @@ pre {
 .settings-grid select,
 .settings-actions .btn {
   width: 100%;
+}
+.settings-feedback {
+  min-height: 38px;
+  margin-top: 12px;
+  border: 1px solid var(--theme-soft-line);
+  border-radius: var(--theme-radius);
+  padding: 9px 11px;
+  background: #f8fafc;
+  color: var(--tw-slate-700);
+  font-size: 12px;
+  font-weight: 720;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+  transition: background .16s ease, border-color .16s ease, color .16s ease;
+}
+.settings-feedback.success {
+  border-color: rgba(15, 118, 110, .28);
+  background: #ecfdf5;
+  color: #0f766e;
+}
+.settings-feedback.error {
+  border-color: rgba(220, 38, 38, .28);
+  background: #fef2f2;
+  color: #b91c1c;
+}
+.settings-feedback.working {
+  border-color: rgba(51, 65, 85, .24);
+  background: #f1f5f9;
+  color: #334155;
 }
 .settings-actions {
   display: grid;
@@ -616,6 +731,42 @@ pre {
   color: var(--tw-white);
   box-shadow: 0 10px 20px rgba(217, 75, 63, .18);
 }
+.btn.is-working,
+.btn.is-done {
+  position: relative;
+}
+.btn.is-working {
+  opacity: .76;
+  pointer-events: none;
+}
+.btn.is-done {
+  border-color: rgba(15, 118, 110, .4);
+  background: #0f766e;
+  color: #fff;
+}
+.btn-secondary.is-done {
+  background: #ecfdf5;
+  color: #0f766e;
+}
+.btn-danger.is-done {
+  background: #991b1b;
+  border-color: #991b1b;
+}
+.btn.is-working::after {
+  content: "";
+  width: 13px;
+  height: 13px;
+  margin-left: 8px;
+  border: 2px solid currentColor;
+  border-right-color: transparent;
+  border-radius: 999px;
+  display: inline-block;
+  vertical-align: -2px;
+  animation: spin .7s linear infinite;
+}
+@keyframes spin {
+  to { transform: rotate(360deg); }
+}
 .status-pill {
   border: 1px solid rgba(21, 166, 163, .22);
   border-radius: var(--theme-radius);
@@ -630,10 +781,52 @@ pre {
   display: grid;
   gap: 10px;
 }
+.device-group {
+  display: grid;
+  gap: 8px;
+}
+.device-group + .device-group {
+  margin-top: 12px;
+}
+.device-group-title {
+  margin: 0;
+  color: var(--tw-slate-500);
+  font-size: 11px;
+  font-weight: 820;
+  text-transform: uppercase;
+}
+.device-selectors {
+  display: grid;
+  gap: 10px;
+  margin-bottom: 14px;
+}
+.device-select-field {
+  display: grid;
+  gap: 6px;
+}
+.device-select-field label {
+  color: var(--tw-slate-500);
+  font-size: 11px;
+  font-weight: 780;
+  text-transform: uppercase;
+}
+.device-select-field select,
+.settings-grid select {
+  width: 100%;
+  min-height: 40px;
+  border: 1px solid var(--theme-line);
+  border-radius: var(--theme-radius);
+  background: var(--tw-white);
+  color: var(--tw-slate-900);
+  padding: 0 11px;
+  font: inherit;
+  box-shadow: var(--shadow-soft);
+}
 .device {
   width: 100%;
   min-height: 82px;
   text-align: left;
+  cursor: pointer;
   color: var(--tw-slate-950);
   background: var(--tw-white);
   border: 1px solid var(--theme-soft-line);
@@ -644,11 +837,49 @@ pre {
   box-shadow: var(--shadow-soft);
   transition: transform .14s ease, border-color .14s ease, background .14s ease;
 }
+.device-main {
+  min-width: 0;
+  display: grid;
+  gap: 5px;
+}
+.device-row {
+  display: flex;
+  align-items: flex-start;
+  justify-content: space-between;
+  gap: 10px;
+}
+.device-actions {
+  display: flex;
+  gap: 6px;
+  flex-shrink: 0;
+}
+.device-action {
+  min-height: 30px;
+  border: 1px solid var(--theme-line);
+  border-radius: var(--theme-radius);
+  background: var(--tw-white);
+  color: var(--tw-slate-700);
+  padding: 5px 9px;
+  font-size: 12px;
+  font-weight: 760;
+}
+.device-action.stop {
+  border-color: rgba(217, 75, 63, .34);
+  color: var(--tw-coral-600);
+}
+.device-action:disabled {
+  cursor: wait;
+  opacity: .62;
+}
 .device strong { font-size: 15px; }
 .device.active {
   border-color: rgba(21, 166, 163, .58);
   outline: 3px solid var(--theme-ring);
   background: #effdfb;
+}
+.device:focus-visible {
+  outline: 3px solid var(--theme-ring);
+  outline-offset: 1px;
 }
 .muted { color: var(--tw-slate-500); font-size: 12px; overflow-wrap: anywhere; }
 .screen-wrap {
@@ -665,17 +896,20 @@ pre {
   border: 1px solid rgba(15, 23, 42, .92);
   border-bottom: 0;
 }
-#screen {
+#screenCanvas,
+#screenVideo {
   max-width: 100%;
   max-height: min(66vh, 620px);
   object-fit: contain;
   display: none;
   cursor: crosshair;
   user-select: none;
-  -webkit-user-drag: none;
   image-rendering: auto;
   transform: translateZ(0);
   will-change: contents;
+}
+#screenVideo {
+  background: #090d14;
 }
 .empty-screen {
   color: rgba(255,255,255,.72);
@@ -815,9 +1049,380 @@ pre {
     min-height: 58vh;
     border-radius: var(--theme-radius) var(--theme-radius) 0 0;
   }
-  #screen { max-height: 58vh; }
+  #screenCanvas,
+  #screenVideo { max-height: 58vh; }
   .action-grid { grid-template-columns: 1fr; }
   .flex-wrap, .grid-cols-3 { grid-template-columns: 1fr; display: grid; }
+}
+
+/* Minimal modern dashboard skin. Kept as CSS overrides so existing device
+   preview, touch input, and fullscreen JavaScript ids remain stable. */
+:root {
+  --theme-line: #e2e8f0;
+  --theme-soft-line: #edf2f7;
+  --theme-ring: rgba(15, 23, 42, .12);
+  --surface: #ffffff;
+  --surface-strong: #ffffff;
+  --surface-muted: #f8fafc;
+  --ink: #0f172a;
+  --ink-muted: #64748b;
+  --brand-a: #0f172a;
+  --brand-b: #334155;
+  --brand-c: #0f766e;
+  --theme-radius: 8px;
+  --shadow-panel: 0 1px 2px rgba(15, 23, 42, .04);
+  --shadow-soft: 0 1px 2px rgba(15, 23, 42, .03);
+}
+body {
+  background: #f8fafc;
+  color: var(--ink);
+}
+input, textarea, select {
+  min-height: 40px;
+  border-color: var(--theme-line);
+  background: #ffffff;
+  box-shadow: none;
+}
+input::placeholder { color: #94a3b8; }
+select {
+  appearance: none;
+  background-image:
+    linear-gradient(45deg, transparent 50%, #64748b 50%),
+    linear-gradient(135deg, #64748b 50%, transparent 50%);
+  background-position:
+    calc(100% - 17px) calc(50% - 3px),
+    calc(100% - 12px) calc(50% - 3px);
+  background-size: 5px 5px, 5px 5px;
+  background-repeat: no-repeat;
+  padding-right: 34px;
+}
+.app-shell {
+  background: #f8fafc;
+}
+.app-layout {
+  grid-template-columns: 300px minmax(420px, 1fr) 320px;
+  gap: 12px;
+  padding: 12px;
+}
+.workspace-rail,
+.monitor-pane,
+.app-controls,
+.monitor-card,
+.logs-panel,
+.settings-dialog {
+  border-color: var(--theme-soft-line);
+  background: var(--surface);
+  box-shadow: var(--shadow-panel);
+  backdrop-filter: none;
+}
+.workspace-rail,
+.monitor-pane,
+.app-controls {
+  min-height: calc(100vh - 24px);
+}
+.monitor-pane {
+  padding: 0;
+  background: transparent;
+  box-shadow: none;
+  border: 0;
+}
+.brand-lockup {
+  padding: 16px;
+  background: #ffffff;
+  color: var(--ink);
+  border-bottom: 1px solid var(--theme-soft-line);
+}
+.brand-mark {
+  width: 36px;
+  height: 36px;
+  background: #0f172a;
+  box-shadow: none;
+}
+.brand-title {
+  font-size: 17px;
+  letter-spacing: 0;
+}
+.brand-subtitle {
+  color: var(--ink-muted);
+}
+.panel-section {
+  padding: 14px;
+}
+.section-head {
+  margin-bottom: 12px;
+}
+.section-title {
+  font-size: 14px;
+  letter-spacing: 0;
+}
+.section-kicker,
+.muted,
+.brand-subtitle {
+  color: var(--ink-muted);
+}
+.brand-subtitle { color: var(--ink-muted); }
+.monitor-card {
+  padding: 12px;
+  background: var(--surface-strong);
+}
+.monitor-toolbar {
+  margin-bottom: 12px;
+  padding-bottom: 12px;
+  border-bottom: 1px solid var(--theme-soft-line);
+}
+.monitor-title {
+  font-size: 20px;
+  letter-spacing: 0;
+}
+#selectedMeta {
+  display: inline-block;
+  max-width: min(52vw, 620px);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.icon-btn,
+.btn {
+  min-height: 40px;
+  border-radius: var(--theme-radius);
+}
+.icon-btn {
+  background: #ffffff;
+  box-shadow: none;
+}
+.btn {
+  background: #0f172a;
+  box-shadow: none;
+}
+.btn-secondary {
+  background: #ffffff;
+  border-color: var(--theme-line);
+  color: var(--ink);
+}
+.btn-danger {
+  background: #dc2626;
+  border-color: #dc2626;
+}
+.btn:hover,
+.icon-btn:hover,
+.device:hover {
+  transform: none;
+  box-shadow: none;
+  border-color: #cbd5e1;
+}
+.status-pill {
+  border-color: var(--theme-line);
+  background: #f8fafc;
+  color: #334155;
+  border-radius: 999px;
+}
+.device-selectors {
+  padding: 10px;
+  border: 1px solid var(--theme-soft-line);
+  border-radius: var(--theme-radius);
+  background: var(--surface-muted);
+}
+.device-select-field label {
+  color: #475569;
+  letter-spacing: 0;
+}
+.device-select-field select,
+.settings-grid select {
+  background-color: #fff;
+  box-shadow: none;
+}
+.device-list {
+  gap: 8px;
+}
+.device-group-title {
+  color: #475569;
+  letter-spacing: 0;
+}
+.device {
+  min-height: 78px;
+  border-color: var(--theme-soft-line);
+  background: #fff;
+  box-shadow: none;
+}
+.device-action {
+  background: #ffffff;
+  border-color: var(--theme-line);
+  color: #334155;
+  box-shadow: none;
+}
+.device-action.stop {
+  border-color: #fecaca;
+  color: #b91c1c;
+}
+.device-action:hover {
+  border-color: #cbd5e1;
+  background: #f8fafc;
+}
+.device strong {
+  color: var(--ink);
+  font-size: 14px;
+}
+.device.active {
+  border-color: #0f172a;
+  background: #f8fafc;
+  outline: 2px solid var(--theme-ring);
+}
+.screen-wrap {
+  min-height: min(70vh, 680px);
+  border-color: rgba(15, 23, 42, .92);
+  border-radius: var(--theme-radius) var(--theme-radius) 0 0;
+  background: #020617;
+}
+#screenCanvas,
+#screenVideo {
+  max-height: min(70vh, 680px);
+}
+.empty-screen {
+  color: rgba(226, 232, 240, .84);
+  font-size: 14px;
+}
+.device-nav {
+  height: 44px;
+  background: #0f172a;
+}
+.device-nav button:hover {
+  background: rgba(255, 255, 255, .08);
+  color: #fff;
+}
+.logs-panel {
+  margin-top: 12px;
+  padding: 12px;
+  background: var(--surface-strong);
+}
+pre {
+  max-height: 300px;
+  border-color: rgba(15, 23, 42, .86);
+  background: #020617;
+  box-shadow: none;
+}
+.field-band {
+  padding: 12px;
+  background: var(--surface-muted);
+}
+.action-grid {
+  gap: 9px;
+}
+.settings-modal {
+  background: rgba(15, 23, 42, .32);
+}
+.settings-dialog {
+  background: #ffffff;
+}
+@media (max-width: 1240px) {
+  .app-layout { grid-template-columns: 288px minmax(0, 1fr); }
+  .app-controls { min-height: auto; }
+}
+@media (max-width: 920px) {
+  .app-layout {
+    grid-template-columns: minmax(0, 1fr);
+    padding: 12px;
+  }
+  .mobile-sidebar-toggle {
+    display: grid;
+    flex: 0 0 auto;
+  }
+  .workspace-rail {
+    position: fixed;
+    inset: 0 auto 0 0;
+    z-index: 70;
+    width: min(84vw, 320px);
+    height: 100vh;
+    height: 100dvh;
+    min-height: 100vh;
+    min-height: 100dvh;
+    max-height: 100vh;
+    max-height: 100dvh;
+    border-radius: 0 var(--theme-radius) var(--theme-radius) 0;
+    border-left: 0;
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+    transform: translateX(calc(-100% - 16px));
+    transition: transform .18s ease;
+  }
+  .workspace-rail .brand-lockup {
+    flex: 0 0 auto;
+  }
+  .workspace-rail .devices-pane {
+    flex: 1 1 auto;
+    min-height: 0;
+    height: auto;
+    max-height: none;
+    overflow-y: auto;
+    -webkit-overflow-scrolling: touch;
+  }
+  body.sidebar-open .workspace-rail {
+    transform: translateX(0);
+  }
+  .sidebar-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 60;
+    display: block;
+    pointer-events: none;
+    background: rgba(15, 23, 42, .32);
+    opacity: 0;
+    transition: opacity .18s ease;
+  }
+  body.sidebar-open .sidebar-backdrop {
+    pointer-events: auto;
+    opacity: 1;
+  }
+  body.sidebar-lock {
+    overflow: hidden;
+  }
+  .workspace-rail,
+  .monitor-pane,
+  .app-controls {
+    min-height: auto;
+  }
+  .workspace-rail {
+    min-height: 100vh;
+    min-height: 100dvh;
+  }
+  .monitor-pane { order: -1; }
+  #selectedMeta {
+    max-width: calc(100vw - 64px);
+    white-space: normal;
+  }
+  .screen-wrap { min-height: 62vh; }
+  #screenCanvas,
+  #screenVideo { max-height: 62vh; }
+}
+@media (max-width: 560px) {
+  .app-shell { background: #f8fafc; }
+  .app-layout { padding: 0; gap: 0; }
+  .monitor-card,
+  .logs-panel,
+  .workspace-rail,
+  .app-controls {
+    border-radius: 0;
+  }
+  .monitor-card {
+    border-left: 0;
+    border-right: 0;
+  }
+  .monitor-title { font-size: 21px; }
+  .monitor-toolbar {
+    grid-template-columns: minmax(0, 1fr);
+    width: 100%;
+  }
+  .toolbar-actions {
+    grid-template-columns: 42px minmax(0, 1fr);
+    justify-self: stretch;
+    width: 100%;
+  }
+  .toolbar-actions .status-pill { grid-column: 1 / -1; }
+  .toolbar-actions .icon-btn { width: 42px; }
+  .toolbar-actions .btn { width: 100%; }
+  .screen-wrap { min-height: 58vh; }
+  #screenCanvas,
+  #screenVideo { max-height: 58vh; }
 }
 "#;
 
@@ -832,18 +1437,64 @@ const state = {
   webrtcPeer: null,
   webrtcChannel: null,
   webrtcSession: null,
+  webrtcMode: null,
   webrtcFrames: new Map(),
   previewUrl: null,
   previewSeq: 0,
   pointerStart: null,
   pending: new Map(),
-  requestSeq: 0
+  requestSeq: 0,
+  feedbackTimer: null
 };
 const el = id => document.getElementById(id);
 
 function setStatus(text) {
   el('status').textContent = text || '';
   el('statusChip').textContent = text ? 'Active' : 'Idle';
+}
+function setSettingsFeedback(text, kind = 'success') {
+  const feedback = el('settingsFeedback');
+  if (!feedback) return;
+  clearTimeout(state.feedbackTimer);
+  feedback.textContent = text || 'Ready';
+  feedback.classList.remove('success', 'error', 'working');
+  if (kind) feedback.classList.add(kind);
+  if (kind === 'success') {
+    state.feedbackTimer = setTimeout(() => {
+      feedback.textContent = 'Ready';
+      feedback.classList.remove('success', 'error', 'working');
+    }, 2200);
+  }
+}
+async function withSettingsButtonFeedback(buttonId, workingText, doneText, action) {
+  const button = el(buttonId);
+  const originalText = button.textContent;
+  button.classList.remove('is-done');
+  button.classList.add('is-working');
+  button.disabled = true;
+  button.textContent = workingText;
+  setSettingsFeedback(workingText, 'working');
+  try {
+    await action();
+    button.classList.remove('is-working');
+    button.classList.add('is-done');
+    button.textContent = doneText;
+    setSettingsFeedback(doneText, 'success');
+    setTimeout(() => {
+      button.classList.remove('is-done');
+      button.disabled = false;
+      button.textContent = originalText;
+    }, 900);
+  } catch (err) {
+    button.classList.remove('is-working');
+    button.disabled = false;
+    button.textContent = originalText;
+    setSettingsFeedback(err.message || 'Action failed', 'error');
+    setStatus(err.message);
+  }
+}
+function settingsControlUpdated(text) {
+  setSettingsFeedback(text, 'success');
 }
 function headers() { return { 'content-type': 'application/json' }; }
 function selectedId() {
@@ -861,22 +1512,141 @@ async function api(path, options = {}) {
 async function json(path, options) {
   return api(path, options).then(r => r.json());
 }
+function devicePlatform(device) {
+  const kind = (device && device.kind ? device.kind : '').toLowerCase();
+  if (kind.includes('android')) return 'android';
+  if (kind.includes('ios')) return 'ios';
+  return 'unknown';
+}
+function selectedPlatform() {
+  return state.selected ? devicePlatform(state.selected) : 'unknown';
+}
+function effectiveStreamSettings() {
+  const format = el('streamFormat').value;
+  const androidAuto = selectedPlatform() === 'android' && format === 'auto';
+  return {
+    fps: androidAuto ? Math.min(Number(el('streamFps').value) || 8, 6) : (Number(el('streamFps').value) || 8),
+    format,
+    maxWidth: Number(el('streamScale').value) || 720,
+    quality: Number(el('streamQuality').value) || 70,
+    label: androidAuto ? 'ANDROID FAST' : format.toUpperCase()
+  };
+}
+function selectDevice(deviceId) {
+  const device = state.devices.find(item => item.id === deviceId);
+  if (!device) return;
+  state.selected = device;
+  renderDevices();
+  restartPreview();
+  if (isMobileSidebar()) closeSidebar();
+}
+function isDeviceRunning(device) {
+  const stateText = (device && device.state ? device.state : '').toLowerCase();
+  return stateText === 'booted' || stateText === 'device';
+}
+function deviceActionLabel(device) {
+  return isDeviceRunning(device) ? 'Stop' : 'Start';
+}
+async function setDevicePower(device, actionButton) {
+  const action = isDeviceRunning(device) ? 'stop' : 'start';
+  actionButton.disabled = true;
+  actionButton.textContent = action === 'start' ? 'Starting' : 'Stopping';
+  try {
+    await post(`/api/devices/${encodeURIComponent(device.id)}/${action}`, {});
+    setStatus(`${action === 'start' ? 'Started' : 'Stopped'} ${device.name}`);
+    await loadDevices();
+  } catch (err) {
+    setStatus(err.message);
+    renderDevices();
+  }
+}
+function renderPlatformSelect(platform, selectId, selectLabel, emptyLabel) {
+  const select = el(selectId);
+  select.innerHTML = '';
+  const devices = state.devices.filter(item => devicePlatform(item) === platform);
+
+  const placeholder = document.createElement('option');
+  placeholder.value = '';
+  placeholder.textContent = devices.length ? selectLabel : emptyLabel;
+  select.appendChild(placeholder);
+
+  for (const device of devices) {
+    const option = document.createElement('option');
+    option.value = device.id;
+    option.textContent = `${device.name} / ${device.state}`;
+    select.appendChild(option);
+  }
+
+  select.value = state.selected && devicePlatform(state.selected) === platform ? state.selected.id : '';
+  select.disabled = select.options.length <= 1;
+}
+function renderDeviceDropdowns() {
+  renderPlatformSelect('android', 'androidDeviceSelect', 'Select Android device', 'No Android devices');
+  renderPlatformSelect('ios', 'iosDeviceSelect', 'Select iOS device', 'No iOS devices');
+}
 function renderDevices() {
   el('devices').innerHTML = '';
   el('selectedMeta').textContent = state.selected
     ? `${state.selected.name} / ${state.selected.kind} / ${state.selected.id}`
     : 'Select a device to begin';
+  renderDeviceDropdowns();
   updateDeviceNav();
-  for (const device of state.devices) {
-    const btn = document.createElement('button');
-    btn.className = `device ${state.selected && state.selected.id === device.id ? 'active' : ''}`;
-    btn.innerHTML = `<strong>${device.name}</strong><span class="muted">${device.kind} / ${device.state}</span><span class="muted">${device.id}</span>`;
-    btn.onclick = () => {
-      state.selected = device;
-      renderDevices();
-      restartPreview();
-    };
-    el('devices').appendChild(btn);
+  for (const [platform, title] of [['android', 'Android'], ['ios', 'iOS']]) {
+    const devices = state.devices.filter(device => devicePlatform(device) === platform);
+    if (!devices.length) continue;
+
+    const group = document.createElement('section');
+    group.className = 'device-group';
+    const heading = document.createElement('h3');
+    heading.className = 'device-group-title';
+    heading.textContent = title;
+    group.appendChild(heading);
+
+    for (const device of devices) {
+      const btn = document.createElement('div');
+      btn.className = `device ${state.selected && state.selected.id === device.id ? 'active' : ''}`;
+      btn.role = 'button';
+      btn.tabIndex = 0;
+      btn.onclick = () => selectDevice(device.id);
+      btn.onkeydown = event => {
+        if (event.key === 'Enter' || event.key === ' ') {
+          event.preventDefault();
+          selectDevice(device.id);
+        }
+      };
+
+      const row = document.createElement('div');
+      row.className = 'device-row';
+      const main = document.createElement('div');
+      main.className = 'device-main';
+      const name = document.createElement('strong');
+      name.textContent = device.name;
+      const meta = document.createElement('span');
+      meta.className = 'muted';
+      meta.textContent = `${device.kind} / ${device.state}`;
+      const id = document.createElement('span');
+      id.className = 'muted';
+      id.textContent = device.id;
+      main.append(name, meta, id);
+
+      const actions = document.createElement('div');
+      actions.className = 'device-actions';
+      const action = document.createElement('button');
+      action.type = 'button';
+      action.className = `device-action ${isDeviceRunning(device) ? 'stop' : 'start'}`;
+      action.textContent = deviceActionLabel(device);
+      action.onclick = event => {
+        event.preventDefault();
+        event.stopPropagation();
+        setDevicePower(device, action);
+      };
+      actions.appendChild(action);
+      row.append(main, actions);
+      btn.appendChild(row);
+      group.appendChild(btn);
+    }
+
+    el('devices').appendChild(group);
   }
   if (!state.devices.length) el('devices').innerHTML = '<p class="muted">No running devices found</p>';
 }
@@ -912,12 +1682,12 @@ async function refreshScreenshot() {
   const blob = await res.blob();
   const url = URL.createObjectURL(blob);
   try {
-    await preloadImage(url);
+    const image = await preloadImage(url);
     if (seq !== state.previewSeq) {
       URL.revokeObjectURL(url);
       return;
     }
-    showPreviewUrl(url);
+    showPreviewImage(image, url);
   } finally {
     if (state.pollAbort === controller) state.pollAbort = null;
   }
@@ -948,18 +1718,19 @@ function startScreenshotStream() {
   const seq = ++state.previewSeq;
   const controller = new AbortController();
   state.streamAbort = controller;
+  const stream = effectiveStreamSettings();
   const params = new URLSearchParams({
-    fps: el('streamFps').value,
-    format: el('streamFormat').value,
-    max_width: el('streamScale').value,
-    quality: el('streamQuality').value,
+    fps: stream.fps.toString(),
+    format: stream.format,
+    max_width: stream.maxWidth.toString(),
+    quality: stream.quality.toString(),
     t: Date.now().toString()
   });
   readScreenshotStream(`/api/devices/${selectedId()}/screenshot-stream?${params}`, controller.signal, seq)
     .catch(err => {
       if (err.name !== 'AbortError') setStatus(err.message);
     });
-  setStatus(`Streaming ${el('streamFps').value} fps / ${el('streamFormat').value.toUpperCase()}`);
+  setStatus(`Streaming ${stream.fps} fps / ${stream.label}`);
 }
 async function startWebRtcStream() {
   stopPreview();
@@ -971,6 +1742,60 @@ async function startWebRtcStream() {
   }
 
   const seq = ++state.previewSeq;
+  try {
+    await startWebRtcMediaStream(seq);
+  } catch (err) {
+    if (seq !== state.previewSeq) return;
+    stopWebRtc();
+    setStatus(`WebRTC video unavailable: ${err.message}`);
+    await startWebRtcDataStream(seq);
+  }
+}
+async function startWebRtcMediaStream(seq) {
+  const peer = new RTCPeerConnection({
+    iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
+  });
+  state.webrtcPeer = peer;
+  state.webrtcMode = 'media';
+  state.webrtcFrames.clear();
+  peer.addTransceiver('video', { direction: 'recvonly' });
+  peer.ontrack = event => {
+    if (seq !== state.previewSeq || !event.streams.length) return;
+    const video = el('screenVideo');
+    video.srcObject = event.streams[0];
+    video.style.display = 'block';
+    el('screenCanvas').style.display = 'none';
+    el('screenEmpty').style.display = 'none';
+    video.play().catch(() => {});
+    const stream = effectiveStreamSettings();
+    setStatus(`WebRTC video ${stream.fps} fps`);
+  };
+  peer.onconnectionstatechange = () => {
+    if (seq !== state.previewSeq) return;
+    if (peer.connectionState === 'failed' || peer.connectionState === 'disconnected') {
+      setStatus('WebRTC video lost, using data channel');
+      stopWebRtc();
+      startWebRtcDataStream(++state.previewSeq).catch(err => {
+        if (el('viewMode').value === 'webrtc') {
+          setStatus(`WebRTC unavailable: ${err.message}`);
+          startScreenshotStream();
+        }
+      });
+    }
+  };
+
+  const offer = await peer.createOffer();
+  await peer.setLocalDescription(offer);
+  await waitForIceGathering(peer);
+  if (seq !== state.previewSeq) return;
+  const response = await postWebRtcOffer('media', peer.localDescription);
+  if (seq !== state.previewSeq) return;
+  state.webrtcSession = response.session_id;
+  await peer.setRemoteDescription(response.answer);
+  setStatus('WebRTC video connecting');
+}
+async function startWebRtcDataStream(seq) {
+  if (seq !== state.previewSeq) return;
   const peer = new RTCPeerConnection({
     iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
   });
@@ -981,9 +1806,13 @@ async function startWebRtcStream() {
   channel.binaryType = 'arraybuffer';
   state.webrtcPeer = peer;
   state.webrtcChannel = channel;
+  state.webrtcMode = 'data';
   state.webrtcFrames.clear();
 
-  channel.onopen = () => setStatus(`WebRTC ${el('streamFps').value} fps / ${el('streamFormat').value.toUpperCase()}`);
+  channel.onopen = () => {
+    const stream = effectiveStreamSettings();
+    setStatus(`WebRTC ${stream.fps} fps / ${stream.label}`);
+  };
   channel.onclose = () => {
     if (seq === state.previewSeq && el('viewMode').value === 'webrtc') setStatus('WebRTC stream closed');
   };
@@ -1008,17 +1837,7 @@ async function startWebRtcStream() {
     await peer.setLocalDescription(offer);
     await waitForIceGathering(peer);
     if (seq !== state.previewSeq) return;
-    const params = {
-      fps: Number(el('streamFps').value),
-      format: el('streamFormat').value,
-      max_width: Number(el('streamScale').value),
-      quality: Number(el('streamQuality').value),
-      offer: peer.localDescription
-    };
-    const response = await json(`/api/devices/${selectedId()}/webrtc/offer`, {
-      method: 'POST',
-      body: JSON.stringify(params)
-    });
+    const response = await postWebRtcOffer('data', peer.localDescription);
     if (seq !== state.previewSeq) return;
     state.webrtcSession = response.session_id;
     await peer.setRemoteDescription(response.answer);
@@ -1029,6 +1848,21 @@ async function startWebRtcStream() {
     setStatus(`WebRTC unavailable: ${err.message}`);
     startScreenshotStream();
   }
+}
+function postWebRtcOffer(transport, offer) {
+  const stream = effectiveStreamSettings();
+  const params = {
+    transport,
+    fps: stream.fps,
+    format: stream.format,
+    max_width: stream.maxWidth,
+    quality: stream.quality,
+    offer
+  };
+  return json(`/api/devices/${selectedId()}/webrtc/offer`, {
+    method: 'POST',
+    body: JSON.stringify(params)
+  });
 }
 function stopPreview() {
   if (state.stopPolling) {
@@ -1051,6 +1885,14 @@ function stopPreview() {
 function stopWebRtc() {
   state.webrtcFrames.clear();
   state.webrtcSession = null;
+  state.webrtcMode = null;
+  const video = el('screenVideo');
+  const canvas = el('screenCanvas');
+  video.pause();
+  video.removeAttribute('src');
+  video.srcObject = null;
+  video.style.display = 'none';
+  canvas.style.display = 'none';
   if (state.webrtcChannel) {
     state.webrtcChannel.onopen = null;
     state.webrtcChannel.onclose = null;
@@ -1095,12 +1937,12 @@ async function readScreenshotStream(path, signal, seq) {
       const frame = buffer.slice(frameStart, frameEnd);
       buffer = buffer.slice(frameEnd);
       const url = URL.createObjectURL(new Blob([frame], { type: typeMatch ? typeMatch[1].trim() : 'image/jpeg' }));
-      await preloadImage(url);
+      const image = await preloadImage(url);
       if (seq !== state.previewSeq) {
         URL.revokeObjectURL(url);
         return;
       }
-      showPreviewUrl(url);
+      showPreviewImage(image, url);
       await nextAnimationFrame();
     }
   }
@@ -1155,12 +1997,12 @@ async function handleWebRtcFrame(data, seq) {
     if (offset >= merged.length) break;
   }
   const url = URL.createObjectURL(new Blob([merged], { type: frame.contentType }));
-  await preloadImage(url);
+  const image = await preloadImage(url);
   if (seq !== state.previewSeq) {
     URL.revokeObjectURL(url);
     return;
   }
-  showPreviewUrl(url);
+  showPreviewImage(image, url);
   await nextAnimationFrame();
 }
 function trimWebRtcFrames() {
@@ -1192,18 +2034,26 @@ function preloadImage(url) {
   const image = new Image();
   image.decoding = 'async';
   image.src = url;
-  if (image.decode) return image.decode();
+  if (image.decode) return image.decode().then(() => image);
   return new Promise((resolve, reject) => {
-    image.onload = resolve;
+    image.onload = () => resolve(image);
     image.onerror = reject;
   });
 }
-function showPreviewUrl(url) {
-  const screen = el('screen');
+function showPreviewImage(image, url) {
+  const canvas = el('screenCanvas');
+  const context = canvas.getContext('2d');
+  const video = el('screenVideo');
   const previousUrl = state.previewUrl;
   state.previewUrl = url;
-  screen.src = url;
-  screen.style.display = 'block';
+  video.pause();
+  video.srcObject = null;
+  video.style.display = 'none';
+  canvas.width = image.naturalWidth || image.width;
+  canvas.height = image.naturalHeight || image.height;
+  context.clearRect(0, 0, canvas.width, canvas.height);
+  context.drawImage(image, 0, 0, canvas.width, canvas.height);
+  canvas.style.display = 'block';
   el('screenEmpty').style.display = 'none';
   if (previousUrl) requestAnimationFrame(() => URL.revokeObjectURL(previousUrl));
 }
@@ -1229,9 +2079,26 @@ function closeSettings() {
   modal.setAttribute('aria-hidden', 'true');
   el('settingsOpen').focus();
 }
+function isMobileSidebar() {
+  return window.matchMedia('(max-width: 920px)').matches;
+}
+function setSidebarOpen(open) {
+  document.body.classList.toggle('sidebar-open', open);
+  document.body.classList.toggle('sidebar-lock', open);
+  el('sidebarBackdrop').setAttribute('aria-hidden', open ? 'false' : 'true');
+  el('sidebarToggle').setAttribute('aria-expanded', open ? 'true' : 'false');
+}
+function openSidebar() {
+  if (!isMobileSidebar()) return;
+  setSidebarOpen(true);
+}
+function closeSidebar() {
+  setSidebarOpen(false);
+}
 function isPreviewFullscreen() {
   const activeElement = document.fullscreenElement || document.webkitFullscreenElement;
-  return activeElement === el('screenWrap');
+  const preview = el('screenWrap');
+  return activeElement === preview || preview.classList.contains('fallback-fullscreen');
 }
 function updateFullscreenButton() {
   const button = el('fullscreenToggle');
@@ -1239,20 +2106,39 @@ function updateFullscreenButton() {
   button.title = active ? 'Exit fullscreen' : 'Enter fullscreen';
   button.setAttribute('aria-label', button.title);
   button.classList.toggle('active', active);
+  if (!active) document.body.classList.remove('preview-fullscreen-lock');
+}
+async function exitPreviewFullscreen() {
+  const preview = el('screenWrap');
+  const exitFullscreen = document.exitFullscreen || document.webkitExitFullscreen;
+  if (preview.classList.contains('fallback-fullscreen')) {
+    preview.classList.remove('fallback-fullscreen');
+    document.body.classList.remove('preview-fullscreen-lock');
+  } else if ((document.fullscreenElement || document.webkitFullscreenElement) && exitFullscreen) {
+    await exitFullscreen.call(document);
+  }
+  updateFullscreenButton();
 }
 async function toggleFullscreen() {
   const preview = el('screenWrap');
   const requestFullscreen = preview && (preview.requestFullscreen || preview.webkitRequestFullscreen);
   const exitFullscreen = document.exitFullscreen || document.webkitExitFullscreen;
   const fullscreenEnabled = document.fullscreenEnabled || document.webkitFullscreenEnabled;
-  if (!fullscreenEnabled || !preview || !requestFullscreen || !exitFullscreen) {
-    setStatus('Fullscreen is not supported');
+  if (!preview) {
+    return;
+  }
+  if (preview.classList.contains('fallback-fullscreen')) {
+    await exitPreviewFullscreen();
     return;
   }
   if (isPreviewFullscreen()) {
-    await exitFullscreen.call(document);
-  } else {
+    await exitPreviewFullscreen();
+  } else if (fullscreenEnabled && requestFullscreen && exitFullscreen) {
     await requestFullscreen.call(preview);
+  } else {
+    preview.classList.add('fallback-fullscreen');
+    document.body.classList.add('preview-fullscreen-lock');
+    setStatus('Fullscreen preview');
   }
   updateFullscreenButton();
 }
@@ -1293,16 +2179,21 @@ function pagePointToImage(pageX, pageY) {
   return clientPointToImage(pageX - window.scrollX, pageY - window.scrollY);
 }
 function clientPointToImage(clientX, clientY) {
-  const img = el('screen');
-  if (!img.naturalWidth || !img.naturalHeight) throw new Error('Screenshot is not ready');
-  const rect = img.getBoundingClientRect();
+  const canvas = el('screenCanvas');
+  const video = el('screenVideo');
+  const usingVideo = video.style.display !== 'none' && video.videoWidth && video.videoHeight;
+  const preview = usingVideo ? video : canvas;
+  const naturalWidth = usingVideo ? video.videoWidth : canvas.width;
+  const naturalHeight = usingVideo ? video.videoHeight : canvas.height;
+  if (!naturalWidth || !naturalHeight) throw new Error('Screenshot is not ready');
+  const rect = preview.getBoundingClientRect();
   const x = Math.max(0, Math.min(rect.width, clientX - rect.left));
   const y = Math.max(0, Math.min(rect.height, clientY - rect.top));
   return {
-    x: Math.round(x * img.naturalWidth / rect.width),
-    y: Math.round(y * img.naturalHeight / rect.height),
-    source_width: img.naturalWidth,
-    source_height: img.naturalHeight
+    x: Math.round(x * naturalWidth / rect.width),
+    y: Math.round(y * naturalHeight / rect.height),
+    source_width: naturalWidth,
+    source_height: naturalHeight
   };
 }
 async function sendPointerCommand(start, end) {
@@ -1368,7 +2259,23 @@ function connectWs() {
   };
 }
 el('refresh').onclick = () => loadDevices().catch(err => setStatus(err.message));
+el('androidDeviceSelect').onchange = event => {
+  if (event.target.value) selectDevice(event.target.value);
+};
+el('iosDeviceSelect').onchange = event => {
+  if (event.target.value) selectDevice(event.target.value);
+};
+el('sidebarToggle').onclick = () => openSidebar();
+el('sidebarBackdrop').onclick = () => closeSidebar();
+document.addEventListener('click', event => {
+  if (!document.body.classList.contains('sidebar-open')) return;
+  const rail = document.querySelector('.workspace-rail');
+  const toggle = el('sidebarToggle');
+  if (rail.contains(event.target) || toggle.contains(event.target)) return;
+  closeSidebar();
+});
 el('fullscreenToggle').onclick = () => toggleFullscreen().catch(err => setStatus(err.message));
+el('fullscreenExit').onclick = () => exitPreviewFullscreen().catch(err => setStatus(err.message));
 document.addEventListener('fullscreenchange', updateFullscreenButton);
 document.addEventListener('webkitfullscreenchange', updateFullscreenButton);
 el('settingsOpen').onclick = () => openSettings();
@@ -1377,28 +2284,56 @@ el('settingsModal').onclick = event => {
   if (event.target === el('settingsModal')) closeSettings();
 };
 document.addEventListener('keydown', event => {
+  if (event.key === 'Escape' && document.body.classList.contains('sidebar-open')) closeSidebar();
   if (event.key === 'Escape' && el('settingsModal').classList.contains('open')) closeSettings();
+  if (event.key === 'Escape' && el('screenWrap').classList.contains('fallback-fullscreen')) {
+    exitPreviewFullscreen().catch(err => setStatus(err.message));
+  }
 });
-el('shot').onclick = () => refreshScreenshot().catch(err => setStatus(err.message));
-el('viewMode').onchange = () => restartPreview();
-el('pollFps').onchange = () => { if (el('viewMode').value === 'poll') startPolling(); };
-el('streamFps').onchange = () => { if (el('viewMode').value !== 'poll') restartPreview(); };
-el('streamFormat').onchange = () => { if (el('viewMode').value !== 'poll') restartPreview(); };
-el('streamScale').onchange = () => { if (el('viewMode').value !== 'poll') restartPreview(); };
-el('streamQuality').onchange = () => { if (el('viewMode').value !== 'poll') restartPreview(); };
-el('logsBtn').onclick = () => loadLogs().catch(err => setStatus(err.message));
+window.addEventListener('resize', () => {
+  if (!isMobileSidebar()) closeSidebar();
+});
+el('shot').onclick = () => withSettingsButtonFeedback('shot', 'Capturing...', 'Screenshot updated', async () => {
+  if (!state.selected) throw new Error('Select a device first');
+  await refreshScreenshot();
+});
+el('viewMode').onchange = () => {
+  restartPreview();
+  settingsControlUpdated(`Preview mode updated to ${el('viewMode').selectedOptions[0].textContent}`);
+};
+el('pollFps').onchange = () => {
+  if (el('viewMode').value === 'poll') startPolling();
+  settingsControlUpdated(`Polling updated to ${el('pollFps').selectedOptions[0].textContent}`);
+};
+el('streamFps').onchange = () => {
+  if (el('viewMode').value !== 'poll') restartPreview();
+  settingsControlUpdated(`Stream FPS updated to ${el('streamFps').selectedOptions[0].textContent}`);
+};
+el('streamFormat').onchange = () => {
+  if (el('viewMode').value !== 'poll') restartPreview();
+  settingsControlUpdated(`Stream format updated to ${el('streamFormat').selectedOptions[0].textContent}`);
+};
+el('streamScale').onchange = () => {
+  if (el('viewMode').value !== 'poll') restartPreview();
+  settingsControlUpdated(`Stream scale updated to ${el('streamScale').selectedOptions[0].textContent}`);
+};
+el('streamQuality').onchange = () => {
+  if (el('viewMode').value !== 'poll') restartPreview();
+  settingsControlUpdated(`Quality updated to ${el('streamQuality').selectedOptions[0].textContent}`);
+};
+el('logsBtn').onclick = () => withSettingsButtonFeedback('logsBtn', 'Loading logs...', 'Logs updated', loadLogs);
 el('navBack').onclick = () => sendKeyValue('BACK').catch(err => setStatus(err.message));
 el('navHome').onclick = () => sendKeyValue('HOME').catch(err => setStatus(err.message));
 el('navRecents').onclick = () => sendKeyValue('APP_SWITCH').catch(err => setStatus(err.message));
 el('install').onclick = () => post(`/api/devices/${selectedId()}/app/install`, { path: el('appPath').value }).catch(err => setStatus(err.message));
 el('launch').onclick = () => post(`/api/devices/${selectedId()}/app/launch`, { app_id: el('appId').value }).catch(err => setStatus(err.message));
 el('terminate').onclick = () => post(`/api/devices/${selectedId()}/app/terminate`, { app_id: el('appId').value }).catch(err => setStatus(err.message));
-el('recordStart').onclick = () => post(`/api/devices/${selectedId()}/record/start`, {}).catch(err => setStatus(err.message));
-el('recordStop').onclick = () => post(`/api/devices/${selectedId()}/record/stop`, {}).catch(err => setStatus(err.message));
+el('recordStart').onclick = () => withSettingsButtonFeedback('recordStart', 'Starting...', 'Recording started', () => post(`/api/devices/${selectedId()}/record/start`, {}));
+el('recordStop').onclick = () => withSettingsButtonFeedback('recordStop', 'Stopping...', 'Recording stopped', () => post(`/api/devices/${selectedId()}/record/stop`, {}));
 function setupScreenControls() {
   if (window.interact) {
     document.body.dataset.touchBackend = 'interact.js';
-    interact('#screen')
+    interact('#screenWrap')
       .draggable({
         listeners: {
           end(event) {
@@ -1429,17 +2364,17 @@ function setupScreenControls() {
   }
 
   document.body.dataset.touchBackend = 'pointer-events-fallback';
-  el('screen').addEventListener('pointerdown', event => {
+  el('screenWrap').addEventListener('pointerdown', event => {
     try {
       if (!state.selected) throw new Error('Select a device first');
-      el('screen').setPointerCapture(event.pointerId);
+      el('screenWrap').setPointerCapture(event.pointerId);
       state.pointerStart = imagePoint(event);
       event.preventDefault();
     } catch (err) {
       setStatus(err.message);
     }
   });
-  el('screen').addEventListener('pointerup', event => {
+  el('screenWrap').addEventListener('pointerup', event => {
     try {
       if (!state.pointerStart) return;
       const start = state.pointerStart;
@@ -1451,7 +2386,7 @@ function setupScreenControls() {
       setStatus(err.message);
     }
   });
-  el('screen').addEventListener('pointercancel', () => { state.pointerStart = null; });
+  el('screenWrap').addEventListener('pointercancel', () => { state.pointerStart = null; });
 }
 setupScreenControls();
 connectWs();

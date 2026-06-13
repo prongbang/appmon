@@ -7,6 +7,7 @@ pub struct AppConfig {
     pub bind: SocketAddr,
     pub udp_bind: Option<SocketAddr>,
     pub adb_path: PathBuf,
+    pub emulator_path: PathBuf,
     pub xcrun_path: PathBuf,
     pub osascript_path: PathBuf,
     pub idb_path: PathBuf,
@@ -37,6 +38,9 @@ impl AppConfig {
             udp_bind,
             adb_path: env::var("ANDROID_ADB_PATH")
                 .unwrap_or_else(|_| default_adb_path().display().to_string())
+                .into(),
+            emulator_path: env::var("ANDROID_EMULATOR_PATH")
+                .unwrap_or_else(|_| default_emulator_path().display().to_string())
                 .into(),
             xcrun_path: env::var("IOS_XCRUN_PATH")
                 .unwrap_or_else(|_| "/usr/bin/xcrun".to_string())
@@ -72,6 +76,29 @@ fn default_adb_path() -> PathBuf {
     }
 
     "adb".into()
+}
+
+fn default_emulator_path() -> PathBuf {
+    let android_home = env::var("ANDROID_HOME")
+        .or_else(|_| env::var("ANDROID_SDK_ROOT"))
+        .ok()
+        .map(PathBuf::from);
+    if let Some(path) = android_home
+        .map(|path| path.join("emulator").join("emulator"))
+        .filter(|path| path.exists())
+    {
+        return path;
+    }
+
+    let home_sdk = env::var("HOME")
+        .ok()
+        .map(PathBuf::from)
+        .map(|home| home.join("Library/Android/sdk/emulator/emulator"));
+    if let Some(path) = home_sdk.filter(|path| path.exists()) {
+        return path;
+    }
+
+    "emulator".into()
 }
 
 fn default_idb_path() -> PathBuf {

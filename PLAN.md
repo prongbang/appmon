@@ -45,14 +45,14 @@
 - Android tap/swipe/text/key ใช้ fast path เป็น persistent `adb -s <serial> shell` session ต่อ device แล้วเขียน `input ...` เข้า stdin เพื่อลด process-spawn latency
 - iOS simulator screenshot ใช้ `xcrun simctl io <udid> screenshot --type=jpeg -` เพื่ออ่าน bytes ขนาดเล็กจาก stdout โดยตรงแทน temp file
 - iOS Full Touch Control พอร์ตแนวทางจาก `ios-bridge`: ใช้ `idb describe` อ่าน point dimensions และใช้ `idb ui tap/swipe/text/key/button --udid <udid>` สำหรับ control แบบเต็ม
-- ตอน server start จะตรวจและติดตั้ง tool ที่ขาดให้เองเท่าที่ทำได้: `android-platform-tools`, `idb-companion`, และ `fb-idb`; ถ้าปิดด้วย `APPMO_AUTO_INSTALL_DEPS=false` จะข้ามขั้นตอนนี้
+- ตอน server start จะตรวจและติดตั้ง tool ที่ขาดให้เองเท่าที่ทำได้: `android-platform-tools`, `idb-companion`, `fb-idb`, และ `ffmpeg`; ถ้าปิดด้วย `APPMO_AUTO_INSTALL_DEPS=false` จะข้ามขั้นตอนนี้
 - ถ้า `idb` ไม่พร้อม iOS tap fallback เป็น `osascript` + macOS Accessibility map พิกัดจาก screenshot ไปยัง Simulator window; swipe/text/key ต้องใช้ `idb`
 - Web UI ส่ง control ผ่าน WebSocket ก่อน และ fallback ไป REST endpoint เดิมถ้า WebSocket ไม่พร้อม
 - Browser ใช้ UDP raw โดยตรงไม่ได้ จึงยังใช้ WebSocket สำหรับหน้าเว็บ; UDP protocol มีไว้สำหรับ native/local control client ที่ส่ง datagram ได้
 - `/health`, `/api/*`, และ `/ws` ไม่ต้องใช้ token
 - Server start ได้โดยไม่ต้องตั้งค่า `APPMO_TOKEN`
 - Screen preview default ใช้ one-shot screenshot + adaptive polling ที่ปรับ FPS ได้, ไม่ปล่อย fetch ซ้อน, preload frame ก่อน swap และ revoke object URL เก่าเพื่อลด memory/paint jitter
-- WebRTC preview เป็น fast path สำหรับ interactive stream: browser สร้าง `RTCPeerConnection` + data channel `appmo-preview`, server ตอบ SDP answer ผ่าน `POST /api/devices/:id/webrtc/offer`, แล้วส่ง encoded screenshot frames เป็น chunked binary packets ผ่าน unreliable data channel; ถ้า negotiation/connection fail จะ fallback ไป multipart stream อัตโนมัติ
+- WebRTC preview เป็น fast path สำหรับ interactive stream: browser สร้าง `RTCPeerConnection` และขอ VP8 video media track ก่อน, server ตอบ SDP answer ผ่าน `POST /api/devices/:id/webrtc/offer`, ใช้ persistent `ffmpeg` realtime encoder แปลง screenshot frames เป็น VP8/IVF แล้วเขียนเข้า WebRTC track เพื่อให้ browser ใช้ native video decoder; ถ้า media track ใช้ไม่ได้จะ fallback ไป data channel `appmo-preview` แบบ chunked binary packets และถ้ายังไม่ได้จะ fallback ไป multipart stream อัตโนมัติ
 - Screenshot stream ใช้ Rust-served multipart stream (`multipart/x-mixed-replace`) ที่ browser อ่านด้วย fetch reader แล้ว preload/swap frame เอง; `format=auto` คง iOS JPEG native แต่แปลง Android PNG เป็น JPEG ตาม `max_width`/`quality`
 - Mouse/touch gestures บนภาพหน้าจอใช้ vendored `interact.js` 1.10.27 เพื่อไม่ต้องดูแล raw pointer edge cases เอง
 - Android low-latency remote-control library ที่ควรต่อยอดคือ `scrcpy`/`@yume-chan/scrcpy`; v1 ใช้ persistent `adb shell input` เป็น transport หลังจาก gesture layer
