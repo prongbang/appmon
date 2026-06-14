@@ -2113,8 +2113,9 @@ function selectedPlatform() {
 function effectiveStreamSettings() {
   const format = el('streamFormat').value;
   const androidAuto = selectedPlatform() === 'android' && format === 'auto';
+  const selectedFps = Number(el('streamFps').value) || 8;
   return {
-    fps: androidAuto ? Math.min(Number(el('streamFps').value) || 8, 6) : (Number(el('streamFps').value) || 8),
+    fps: androidAuto ? Math.max(selectedFps, 12) : selectedFps,
     format,
     maxWidth: Number(el('streamScale').value) || 720,
     quality: Number(el('streamQuality').value) || 70,
@@ -2345,7 +2346,7 @@ function startNativeEmulatorWebRtcStream(seq) {
     let peer = null;
     const timeout = setTimeout(() => {
       settleReject(new Error('native emulator WebRTC video timed out'));
-    }, 8000);
+    }, 3000);
     const settleResolve = () => {
       if (settled) return;
       settled = true;
@@ -2469,9 +2470,7 @@ function startNativeEmulatorWebRtcStream(seq) {
   });
 }
 async function startWebRtcMediaStream(seq) {
-  const peer = new RTCPeerConnection({
-    iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
-  });
+  const peer = new RTCPeerConnection({ iceServers: [] });
   state.webrtcPeer = peer;
   state.webrtcMode = 'media';
   state.webrtcFrames.clear();
@@ -2514,9 +2513,7 @@ async function startWebRtcMediaStream(seq) {
 }
 async function startWebRtcDataStream(seq) {
   if (seq !== state.previewSeq) return;
-  const peer = new RTCPeerConnection({
-    iceServers: [{ urls: 'stun:stun.l.google.com:19302' }]
-  });
+  const peer = new RTCPeerConnection({ iceServers: [] });
   const channel = peer.createDataChannel('appmon-preview', {
     ordered: false,
     maxRetransmits: 0
@@ -2681,7 +2678,7 @@ async function readScreenshotStream(path, signal, seq) {
 function waitForIceGathering(peer) {
   if (peer.iceGatheringState === 'complete') return Promise.resolve();
   return new Promise(resolve => {
-    const timeout = setTimeout(done, 1200);
+    const timeout = setTimeout(done, 250);
     function done() {
       clearTimeout(timeout);
       peer.removeEventListener('icegatheringstatechange', onChange);

@@ -43,7 +43,6 @@ use webrtc::{
         APIBuilder,
     },
     data_channel::{data_channel_state::RTCDataChannelState, RTCDataChannel},
-    ice_transport::ice_server::RTCIceServer,
     interceptor::registry::Registry,
     peer_connection::{
         configuration::RTCConfiguration, peer_connection_state::RTCPeerConnectionState,
@@ -366,15 +365,9 @@ async fn webrtc_offer<R: ProcessRunner + Clone>(
         .with_interceptor_registry(registry)
         .build();
     let peer_connection = Arc::new(
-        api.new_peer_connection(RTCConfiguration {
-            ice_servers: vec![RTCIceServer {
-                urls: vec!["stun:stun.l.google.com:19302".to_string()],
-                ..Default::default()
-            }],
-            ..Default::default()
-        })
-        .await
-        .map_err(webrtc_api_error)?,
+        api.new_peer_connection(RTCConfiguration::default())
+            .await
+            .map_err(webrtc_api_error)?,
     );
 
     if transport == WebRtcTransport::Media {
