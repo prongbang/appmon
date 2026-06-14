@@ -189,6 +189,10 @@ impl<R: ProcessRunner> DeviceManager<R> {
         self.config.android_grpc_endpoint.as_deref()
     }
 
+    pub fn adb_path(&self) -> &std::path::Path {
+        &self.config.adb_path
+    }
+
     pub async fn screenshot(&self, id: &DeviceId) -> AppResult<Screenshot> {
         match id.kind {
             DeviceKind::Android => {

@@ -97,6 +97,7 @@ fn MonitorPane() -> Element {
                 }
                 div { id: "screenWrap", class: "screen-wrap",
                     canvas { id: "screenCanvas", aria_label: "Device screenshot preview" }
+                    img { id: "screenStream", alt: "Device stream preview" }
                     video { id: "screenVideo", autoplay: true, muted: true, playsinline: true, controls: false, aria_label: "Device video preview" }
                     div { id: "screenEmpty", class: "empty-screen", "Select a device" }
                     button { id: "fullscreenExit", class: "fullscreen-exit", title: "Exit fullscreen", aria_label: "Exit fullscreen",
@@ -159,6 +160,7 @@ fn PreviewSettingsModal() -> Element {
                         span { "Fallback Format" }
                         select { id: "streamFormat", title: "Fallback stream format", aria_label: "Fallback stream format",
                             option { value: "auto", selected: true, "Auto smooth" }
+                            option { value: "video", "Fast video" }
                             option { value: "native", "Fast native" }
                             option { value: "jpeg", "Small JPEG" }
                         }
@@ -571,10 +573,13 @@ pre {
   display: grid;
 }
 .screen-wrap:fullscreen #screenCanvas,
+.screen-wrap:fullscreen #screenStream,
 .screen-wrap:fullscreen #screenVideo,
 .screen-wrap:-webkit-full-screen #screenCanvas,
+.screen-wrap:-webkit-full-screen #screenStream,
 .screen-wrap:-webkit-full-screen #screenVideo,
 .screen-wrap.fallback-fullscreen #screenCanvas,
+.screen-wrap.fallback-fullscreen #screenStream,
 .screen-wrap.fallback-fullscreen #screenVideo {
   max-width: 100%;
   max-height: 100%;
@@ -898,6 +903,7 @@ body.preview-fullscreen-lock {
   border-bottom: 0;
 }
 #screenCanvas,
+#screenStream,
 #screenVideo {
   max-width: 100%;
   max-height: min(66vh, 620px);
@@ -1054,6 +1060,7 @@ body.preview-fullscreen-lock {
     border-radius: var(--theme-radius) var(--theme-radius) 0 0;
   }
   #screenCanvas,
+  #screenStream,
   #screenVideo { max-height: 58vh; }
   .action-grid { grid-template-columns: 1fr; }
   .flex-wrap, .grid-cols-3 { grid-template-columns: 1fr; display: grid; }
@@ -1267,6 +1274,7 @@ select {
   background: #020617;
 }
 #screenCanvas,
+#screenStream,
 #screenVideo {
   max-height: min(70vh, 680px);
 }
@@ -1385,6 +1393,7 @@ pre {
   }
   .screen-wrap { min-height: 62vh; }
   #screenCanvas,
+  #screenStream,
   #screenVideo { max-height: 62vh; }
 }
 @media (max-width: 560px) {
@@ -1415,6 +1424,7 @@ pre {
   .toolbar-actions .btn { width: 100%; }
   .screen-wrap { min-height: 58vh; }
   #screenCanvas,
+  #screenStream,
   #screenVideo { max-height: 58vh; }
 }
 
@@ -1876,6 +1886,7 @@ pre {
   box-shadow: none;
 }
 #screenCanvas,
+#screenStream,
 #screenVideo {
   max-height: min(72vh, 700px);
 }
@@ -1978,6 +1989,7 @@ pre {
     min-height: 62vh;
   }
   #screenCanvas,
+  #screenStream,
   #screenVideo {
     max-height: 62vh;
   }
@@ -2280,10 +2292,15 @@ function startScreenshotStream() {
     quality: stream.quality.toString(),
     t: Date.now().toString()
   });
-  readScreenshotStream(`/api/devices/${selectedId()}/screenshot-stream?${params}`, controller.signal, seq)
-    .catch(err => {
-      if (err.name !== 'AbortError') setStatus(err.message);
-    });
+  const path = `/api/devices/${selectedId()}/screenshot-stream?${params}`;
+  if (isAndroidSelected() && (stream.format === 'auto' || stream.format === 'video')) {
+    showStreamImage(path, seq);
+    setStatus(`Fast Android video stream / ${stream.label}`);
+    return;
+  }
+  readScreenshotStream(path, controller.signal, seq).catch(err => {
+    if (err.name !== 'AbortError') setStatus(err.message);
+  });
   setStatus(`Streaming ${stream.fps} fps / ${stream.label}`);
 }
 async function startWebRtcStream() {
@@ -2306,6 +2323,8 @@ async function startWebRtcStream() {
       const message = `Native WebRTC unavailable, falling back: ${err.message}`;
       setStatus(message);
       setSettingsFeedback(message, 'error');
+      startScreenshotStream();
+      return;
     }
   }
   try {
@@ -2381,6 +2400,7 @@ function startNativeEmulatorWebRtcStream(seq) {
         peer.ontrack = event => {
           if (seq !== state.previewSeq) return;
           const video = el('screenVideo');
+          el('screenStream').style.display = 'none';
           video.srcObject = event.streams && event.streams.length
             ? event.streams[0]
             : new MediaStream([event.track]);
@@ -2459,6 +2479,7 @@ async function startWebRtcMediaStream(seq) {
   peer.ontrack = event => {
     if (seq !== state.previewSeq || !event.streams.length) return;
     const video = el('screenVideo');
+    el('screenStream').style.display = 'none';
     video.srcObject = event.streams[0];
     video.style.display = 'block';
     el('screenCanvas').style.display = 'none';
@@ -2593,6 +2614,11 @@ function stopWebRtc() {
   state.webrtcMode = null;
   const video = el('screenVideo');
   const canvas = el('screenCanvas');
+  const streamImage = el('screenStream');
+  streamImage.onload = null;
+  streamImage.onerror = null;
+  streamImage.removeAttribute('src');
+  streamImage.style.display = 'none';
   video.pause();
   video.removeAttribute('src');
   video.srcObject = null;
@@ -2749,8 +2775,11 @@ function showPreviewImage(image, url) {
   const canvas = el('screenCanvas');
   const context = canvas.getContext('2d');
   const video = el('screenVideo');
+  const streamImage = el('screenStream');
   const previousUrl = state.previewUrl;
   state.previewUrl = url;
+  streamImage.removeAttribute('src');
+  streamImage.style.display = 'none';
   video.pause();
   video.srcObject = null;
   video.style.display = 'none';
@@ -2761,6 +2790,25 @@ function showPreviewImage(image, url) {
   canvas.style.display = 'block';
   el('screenEmpty').style.display = 'none';
   if (previousUrl) requestAnimationFrame(() => URL.revokeObjectURL(previousUrl));
+}
+function showStreamImage(path, seq) {
+  const streamImage = el('screenStream');
+  const video = el('screenVideo');
+  const canvas = el('screenCanvas');
+  video.pause();
+  video.srcObject = null;
+  video.style.display = 'none';
+  canvas.style.display = 'none';
+  streamImage.onload = () => {
+    if (seq !== state.previewSeq) return;
+    el('screenEmpty').style.display = 'none';
+  };
+  streamImage.onerror = () => {
+    if (seq === state.previewSeq) setStatus('Fast Android stream stopped');
+  };
+  streamImage.src = path;
+  streamImage.style.display = 'block';
+  el('screenEmpty').style.display = 'none';
 }
 function restartPreview() {
   updateDeviceNav();
@@ -2907,11 +2955,13 @@ function pagePointToImage(pageX, pageY) {
 }
 function clientPointToImage(clientX, clientY) {
   const canvas = el('screenCanvas');
+  const streamImage = el('screenStream');
   const video = el('screenVideo');
   const usingVideo = video.style.display !== 'none' && video.videoWidth && video.videoHeight;
-  const preview = usingVideo ? video : canvas;
-  const naturalWidth = usingVideo ? video.videoWidth : canvas.width;
-  const naturalHeight = usingVideo ? video.videoHeight : canvas.height;
+  const usingStream = !usingVideo && streamImage.style.display !== 'none' && streamImage.naturalWidth && streamImage.naturalHeight;
+  const preview = usingVideo ? video : usingStream ? streamImage : canvas;
+  const naturalWidth = usingVideo ? video.videoWidth : usingStream ? streamImage.naturalWidth : canvas.width;
+  const naturalHeight = usingVideo ? video.videoHeight : usingStream ? streamImage.naturalHeight : canvas.height;
   if (!naturalWidth || !naturalHeight) throw new Error('Screenshot is not ready');
   const rect = preview.getBoundingClientRect();
   const x = Math.max(0, Math.min(rect.width, clientX - rect.left));

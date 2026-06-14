@@ -1,7 +1,7 @@
 use appmon_core::{
-    android_grpc, AppError, AppInstallRequest, AppLaunchRequest, AppTerminateRequest, DeviceId,
-    DeviceKind, DeviceManager, KeyRequest, LogRequest, MotionAction, MotionRequest, ProcessRunner,
-    RecordRequest, SwipeRequest, TapRequest, TextRequest,
+    android_grpc, AppError, AppInstallRequest, AppLaunchRequest, AppResult, AppTerminateRequest,
+    DeviceId, DeviceKind, DeviceManager, KeyRequest, LogRequest, MotionAction, MotionRequest,
+    ProcessRunner, RecordRequest, SwipeRequest, TapRequest, TextRequest,
 };
 use axum::{
     body::Body,
@@ -163,6 +163,14 @@ async fn screenshot_stream<R: ProcessRunner + Clone>(
     let stream_format = req.format.as_deref().unwrap_or("auto").to_ascii_lowercase();
     let max_width = req.max_width.unwrap_or(720).clamp(240, 4096);
     let quality = req.quality.unwrap_or(70).clamp(35, 95);
+    if id.kind == DeviceKind::Android && matches!(stream_format.as_str(), "auto" | "video") {
+        match android_multipart_screencap_stream(state.controller.clone(), id.clone(), fps).await {
+            Ok(response) => return Ok(response),
+            Err(error) => {
+                warn!(device = %id.web_id(), %error, "Android multipart screencap stream unavailable; using screenshot stream");
+            }
+        }
+    }
     let frame_delay = Duration::from_millis(1_000 / u64::from(fps));
     let controller = state.controller.clone();
     let boundary = "appmon-frame";
@@ -221,6 +229,63 @@ async fn screenshot_stream<R: ProcessRunner + Clone>(
             (
                 header::CONTENT_TYPE,
                 format!("multipart/x-mixed-replace; boundary={boundary}"),
+            ),
+            (header::CACHE_CONTROL, "no-store".to_string()),
+        ],
+        Body::from_stream(body_stream),
+    )
+        .into_response())
+}
+
+struct AndroidMultipartStreamState {
+    stdout: tokio::process::ChildStdout,
+    adb: tokio::process::Child,
+}
+
+async fn android_multipart_screencap_stream<R: ProcessRunner + Clone>(
+    controller: DeviceManager<R>,
+    id: DeviceId,
+    fps: u32,
+) -> AppResult<Response> {
+    let sleep_secs = format!("{:.3}", 1.0_f32 / fps.clamp(1, 15) as f32);
+    let script = format!(
+        "while true; do printf \"--appmon\\r\\nContent-Type: image/png\\r\\n\\r\\n\"; screencap -p; printf \"\\r\\n\"; sleep {sleep_secs}; done"
+    );
+    let mut adb = Command::new(controller.adb_path())
+        .args(["-s", &id.raw, "exec-out", "sh", "-c", &script])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .spawn()?;
+    let stdout = adb.stdout.take().ok_or_else(|| {
+        AppError::UnsupportedCapability("adb multipart stream stdout is unavailable".to_string())
+    })?;
+    let body_stream = stream::unfold(
+        AndroidMultipartStreamState { stdout, adb },
+        move |mut state| async move {
+            let mut chunk = vec![0_u8; 32 * 1024];
+            match state.stdout.read(&mut chunk).await {
+                Ok(0) => {
+                    let _ = state.adb.kill().await;
+                    None
+                }
+                Ok(size) => {
+                    chunk.truncate(size);
+                    Some((Ok::<Bytes, Infallible>(Bytes::from(chunk)), state))
+                }
+                Err(_) => {
+                    let _ = state.adb.kill().await;
+                    None
+                }
+            }
+        },
+    );
+
+    Ok((
+        [
+            (
+                header::CONTENT_TYPE,
+                "multipart/x-mixed-replace;boundary=appmon".to_string(),
             ),
             (header::CACHE_CONTROL, "no-store".to_string()),
         ],
