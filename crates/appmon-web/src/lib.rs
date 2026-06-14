@@ -1966,6 +1966,7 @@ const state = {
   streamAbort: null,
   webrtcPeer: null,
   webrtcChannel: null,
+  emulatorRtcSocket: null,
   webrtcSession: null,
   webrtcMode: null,
   webrtcFrames: new Map(),
@@ -2249,6 +2250,16 @@ async function startWebRtcStream() {
   }
 
   const seq = ++state.previewSeq;
+  if (isAndroidSelected()) {
+    try {
+      await startNativeEmulatorWebRtcStream(seq);
+      return;
+    } catch (err) {
+      if (seq !== state.previewSeq) return;
+      stopWebRtc();
+      setStatus(`Native WebRTC unavailable: ${err.message}`);
+    }
+  }
   try {
     await startWebRtcMediaStream(seq);
   } catch (err) {
@@ -2257,6 +2268,130 @@ async function startWebRtcStream() {
     setStatus(`WebRTC video unavailable: ${err.message}`);
     await startWebRtcDataStream(seq);
   }
+}
+function startNativeEmulatorWebRtcStream(seq) {
+  return new Promise((resolve, reject) => {
+    const proto = location.protocol === 'https:' ? 'wss' : 'ws';
+    const socket = new WebSocket(`${proto}://${location.host}/api/devices/${selectedId()}/emulator-webrtc/ws`);
+    const patch = { candidates: [], sdp: null, haveOffer: false, answer: false };
+    let settled = false;
+    let peer = null;
+    const timeout = setTimeout(() => {
+      if (!settled) reject(new Error('native emulator WebRTC timed out'));
+    }, 6000);
+    const settleResolve = () => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      resolve();
+    };
+    const settleReject = err => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      reject(err instanceof Error ? err : new Error(String(err)));
+    };
+    const sendSignal = value => {
+      if (socket.readyState === WebSocket.OPEN) socket.send(JSON.stringify(value));
+    };
+    const handleCandidate = signal => {
+      if (!peer) return;
+      peer.addIceCandidate(new RTCIceCandidate(signal)).catch(err => {
+        if (seq === state.previewSeq) setStatus(`Native ICE failed: ${err.message}`);
+      });
+    };
+    const handleSdp = async signal => {
+      if (!peer || patch.answer) return;
+      await peer.setRemoteDescription(new RTCSessionDescription(signal));
+      const answer = await peer.createAnswer();
+      if (!answer || patch.answer) return;
+      patch.answer = true;
+      await peer.setLocalDescription(answer);
+      sendSignal({ sdp: answer });
+    };
+    const flushSignals = () => {
+      if (!peer) return;
+      if (patch.sdp) {
+        const sdp = patch.sdp;
+        patch.sdp = null;
+        handleSdp(sdp).catch(settleReject);
+      }
+      if (patch.haveOffer) {
+        while (patch.candidates.length) handleCandidate(patch.candidates.shift());
+      }
+    };
+    const handleSignal = signal => {
+      if (signal.error) {
+        settleReject(new Error(signal.error));
+        return;
+      }
+      if (signal.start) {
+        peer = new RTCPeerConnection(signal.start);
+        state.webrtcPeer = peer;
+        state.webrtcMode = 'native';
+        state.webrtcFrames.clear();
+        peer.ontrack = event => {
+          if (seq !== state.previewSeq) return;
+          const video = el('screenVideo');
+          video.srcObject = event.streams && event.streams.length
+            ? event.streams[0]
+            : new MediaStream([event.track]);
+          video.style.display = 'block';
+          el('screenCanvas').style.display = 'none';
+          el('screenEmpty').style.display = 'none';
+          video.play().catch(() => {});
+          setStatus('Native emulator WebRTC video');
+          settleResolve();
+        };
+        peer.onicecandidate = event => {
+          if (event.candidate) sendSignal({ candidate: event.candidate });
+        };
+        peer.ondatachannel = event => {
+          // The emulator may expose input data channels. Appmon keeps input on
+          // its existing control path so preview and control can fail over
+          // independently.
+          event.channel.binaryType = 'arraybuffer';
+        };
+        peer.onsignalingstatechange = () => {
+          if (peer && peer.signalingState === 'have-remote-offer') {
+            patch.haveOffer = true;
+            flushSignals();
+          }
+        };
+        peer.onconnectionstatechange = () => {
+          if (seq !== state.previewSeq || !peer) return;
+          if (peer.connectionState === 'connected') settleResolve();
+          if (peer.connectionState === 'failed' || peer.connectionState === 'disconnected') {
+            if (!settled) settleReject(new Error(`native emulator WebRTC ${peer.connectionState}`));
+            else setStatus('Native WebRTC lost, using Appmon WebRTC');
+          }
+        };
+      }
+      if (signal.bye) {
+        if (!settled) settleReject(new Error('native emulator WebRTC closed'));
+        return;
+      }
+      if (signal.sdp && !patch.sdp) patch.sdp = signal;
+      if (signal.candidate) patch.candidates.push(signal);
+      flushSignals();
+    };
+    socket.onopen = () => {
+      if (seq === state.previewSeq) setStatus('Native emulator WebRTC connecting');
+    };
+    socket.onmessage = event => {
+      if (seq !== state.previewSeq) return;
+      try {
+        handleSignal(JSON.parse(event.data));
+      } catch (err) {
+        settleReject(err);
+      }
+    };
+    socket.onerror = () => settleReject(new Error('native emulator WebRTC socket failed'));
+    socket.onclose = () => {
+      if (!settled) settleReject(new Error('native emulator WebRTC socket closed'));
+    };
+    state.emulatorRtcSocket = socket;
+  });
 }
 async function startWebRtcMediaStream(seq) {
   const peer = new RTCPeerConnection({
@@ -2390,6 +2525,14 @@ function stopPreview() {
   state.previewSeq++;
 }
 function stopWebRtc() {
+  if (state.emulatorRtcSocket) {
+    state.emulatorRtcSocket.onopen = null;
+    state.emulatorRtcSocket.onmessage = null;
+    state.emulatorRtcSocket.onerror = null;
+    state.emulatorRtcSocket.onclose = null;
+    try { state.emulatorRtcSocket.close(); } catch (_) {}
+    state.emulatorRtcSocket = null;
+  }
   state.webrtcFrames.clear();
   state.webrtcSession = null;
   state.webrtcMode = null;

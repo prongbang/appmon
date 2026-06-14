@@ -1,6 +1,6 @@
 use appmon_core::{
-    AppError, AppInstallRequest, AppLaunchRequest, AppTerminateRequest, DeviceId, DeviceKind,
-    DeviceManager, KeyRequest, LogRequest, MotionAction, MotionRequest, ProcessRunner,
+    android_grpc, AppError, AppInstallRequest, AppLaunchRequest, AppTerminateRequest, DeviceId,
+    DeviceKind, DeviceManager, KeyRequest, LogRequest, MotionAction, MotionRequest, ProcessRunner,
     RecordRequest, SwipeRequest, TapRequest, TextRequest,
 };
 use axum::{
@@ -72,6 +72,10 @@ pub fn build_router<R: ProcessRunner + Clone>(controller: DeviceManager<R>) -> R
             get(screenshot_stream::<R>),
         )
         .route("/devices/:id/webrtc/offer", post(webrtc_offer::<R>))
+        .route(
+            "/devices/:id/emulator-webrtc/ws",
+            get(emulator_webrtc_ws::<R>),
+        )
         .route("/devices/:id/input/tap", post(tap::<R>))
         .route("/devices/:id/input/swipe", post(swipe::<R>))
         .route("/devices/:id/input/motion", post(motion::<R>))
@@ -718,6 +722,92 @@ fn webrtc_api_error(error: webrtc::Error) -> ApiError {
     ApiError(AppError::InvalidInput(format!(
         "WebRTC negotiation failed: {error}"
     )))
+}
+
+async fn emulator_webrtc_ws<R: ProcessRunner + Clone>(
+    State(state): State<AppState<R>>,
+    Path(id): Path<String>,
+    ws: WebSocketUpgrade,
+) -> Result<Response, ApiError> {
+    let id = DeviceId::parse(&id)?;
+    if id.kind != DeviceKind::Android {
+        return Err(ApiError(AppError::UnsupportedCapability(
+            "native emulator WebRTC is only available for Android emulators".to_string(),
+        )));
+    }
+    let endpoint = state
+        .controller
+        .android_emulator_grpc_endpoint()
+        .ok_or_else(|| {
+            ApiError(AppError::UnsupportedCapability(
+                "set APPMON_ANDROID_GRPC_ENDPOINT to use native emulator WebRTC".to_string(),
+            ))
+        })?
+        .to_string();
+    Ok(ws.on_upgrade(move |socket| handle_emulator_webrtc_socket(socket, endpoint, id)))
+}
+
+async fn handle_emulator_webrtc_socket(mut socket: WebSocket, endpoint: String, id: DeviceId) {
+    let rtc_id = match android_grpc::request_rtc_stream(&endpoint).await {
+        Ok(rtc_id) => rtc_id,
+        Err(error) => {
+            let _ = socket
+                .send(Message::Text(format!(
+                    r#"{{"error":"failed to start native emulator WebRTC: {error}"}}"#
+                )))
+                .await;
+            let _ = socket.close().await;
+            return;
+        }
+    };
+
+    let mut messages = match android_grpc::receive_jsep_messages(&endpoint, rtc_id.clone()).await {
+        Ok(messages) => messages,
+        Err(error) => {
+            let _ = socket
+                .send(Message::Text(format!(
+                    r#"{{"error":"failed to read native emulator WebRTC messages: {error}"}}"#
+                )))
+                .await;
+            let _ = socket.close().await;
+            return;
+        }
+    };
+
+    loop {
+        tokio::select! {
+            message = messages.message() => {
+                match message {
+                    Ok(Some(message)) => {
+                        if socket.send(Message::Text(message.message)).await.is_err() {
+                            break;
+                        }
+                    }
+                    Ok(None) => break,
+                    Err(error) => {
+                        warn!(device = %id.web_id(), %error, "native emulator WebRTC message stream stopped");
+                        break;
+                    }
+                }
+            }
+            incoming = socket.recv() => {
+                match incoming {
+                    Some(Ok(Message::Text(message))) => {
+                        if let Err(error) = android_grpc::send_jsep_message(&endpoint, rtc_id.clone(), message).await {
+                            warn!(device = %id.web_id(), %error, "failed to forward browser JSEP to emulator");
+                            break;
+                        }
+                    }
+                    Some(Ok(Message::Close(_))) | None => break,
+                    Some(Ok(_)) => {}
+                    Some(Err(error)) => {
+                        warn!(device = %id.web_id(), %error, "native emulator WebRTC browser socket stopped");
+                        break;
+                    }
+                }
+            }
+        }
+    }
 }
 
 async fn tap<R: ProcessRunner + Clone>(

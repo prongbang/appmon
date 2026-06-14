@@ -12,7 +12,8 @@ pub mod proto {
 
 use proto::{
     emulator_controller_client::EmulatorControllerClient, keyboard_event::KeyEventType,
-    touch::EventExpiration, KeyboardEvent, Touch, TouchEvent,
+    rtc_client::RtcClient, touch::EventExpiration, JsepMsg, KeyboardEvent, RtcId, Touch,
+    TouchEvent,
 };
 
 const TOUCH_IDENTIFIER: i32 = 1;
@@ -68,6 +69,33 @@ pub async fn send_text(endpoint: &str, req: &TextRequest) -> AppResult<()> {
     Ok(())
 }
 
+pub async fn request_rtc_stream(endpoint: &str) -> AppResult<RtcId> {
+    let mut client = connect_rtc(endpoint).await?;
+    let response = client.request_rtc_stream(()).await.map_err(grpc_error)?;
+    Ok(response.into_inner())
+}
+
+pub async fn send_jsep_message(endpoint: &str, id: RtcId, message: String) -> AppResult<()> {
+    let mut client = connect_rtc(endpoint).await?;
+    client
+        .send_jsep_message(JsepMsg {
+            id: Some(id),
+            message,
+        })
+        .await
+        .map_err(grpc_error)?;
+    Ok(())
+}
+
+pub async fn receive_jsep_messages(
+    endpoint: &str,
+    id: RtcId,
+) -> AppResult<tonic::Streaming<JsepMsg>> {
+    let mut client = connect_rtc(endpoint).await?;
+    let response = client.receive_jsep_messages(id).await.map_err(grpc_error)?;
+    Ok(response.into_inner())
+}
+
 async fn send_touch(
     endpoint: &str,
     x: u32,
@@ -95,14 +123,23 @@ async fn send_touch(
 }
 
 async fn connect(endpoint: &str) -> AppResult<EmulatorControllerClient<Channel>> {
-    let channel = Channel::from_shared(endpoint.to_string())
-        .map_err(|error| AppError::InvalidInput(format!("invalid Android gRPC endpoint: {error}")))?
-        .connect_timeout(Duration::from_millis(120))
-        .timeout(Duration::from_millis(250))
-        .connect()
-        .await
-        .map_err(grpc_error)?;
+    let channel = connect_channel(endpoint, Some(Duration::from_millis(250))).await?;
     Ok(EmulatorControllerClient::new(channel))
+}
+
+async fn connect_rtc(endpoint: &str) -> AppResult<RtcClient<Channel>> {
+    let channel = connect_channel(endpoint, None).await?;
+    Ok(RtcClient::new(channel))
+}
+
+async fn connect_channel(endpoint: &str, request_timeout: Option<Duration>) -> AppResult<Channel> {
+    let mut endpoint = Channel::from_shared(endpoint.to_string())
+        .map_err(|error| AppError::InvalidInput(format!("invalid Android gRPC endpoint: {error}")))?
+        .connect_timeout(Duration::from_millis(120));
+    if let Some(timeout) = request_timeout {
+        endpoint = endpoint.timeout(timeout);
+    }
+    endpoint.connect().await.map_err(grpc_error)
 }
 
 fn grpc_error(error: impl std::fmt::Display) -> AppError {

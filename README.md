@@ -102,7 +102,7 @@ Use a local app path for install:
 
 Appmon supports multiple preview paths:
 
-- `WebRTC`: lowest-latency mode, using a VP8 media track when available
+- `WebRTC`: lowest-latency mode. Android uses the emulator native gRPC/WebRTC `RtcService` when `APPMON_ANDROID_GRPC_ENDPOINT` is set, then falls back to Appmon's VP8 media track
 - `Stream`: multipart stream fallback
 - `Polling`: conservative screenshot polling fallback
 

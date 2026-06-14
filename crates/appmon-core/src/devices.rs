@@ -185,6 +185,10 @@ impl<R: ProcessRunner> DeviceManager<R> {
         Ok(devices)
     }
 
+    pub fn android_emulator_grpc_endpoint(&self) -> Option<&str> {
+        self.config.android_grpc_endpoint.as_deref()
+    }
+
     pub async fn screenshot(&self, id: &DeviceId) -> AppResult<Screenshot> {
         match id.kind {
             DeviceKind::Android => {
@@ -695,7 +699,7 @@ impl<R: ProcessRunner> DeviceManager<R> {
     }
 
     fn android_grpc_endpoint(&self) -> Option<&str> {
-        self.config.android_grpc_endpoint.as_deref()
+        self.android_emulator_grpc_endpoint()
     }
 
     async fn write_android_input(&self, id: &DeviceId, command: &str) -> AppResult<()> {

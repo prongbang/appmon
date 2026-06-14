@@ -1,0 +1,20 @@
+syntax = "proto3";
+
+package android.emulation.control;
+
+import "google/protobuf/empty.proto";
+
+service Rtc {
+  rpc requestRtcStream(google.protobuf.Empty) returns (RtcId) {}
+  rpc sendJsepMessage(JsepMsg) returns (google.protobuf.Empty) {}
+  rpc receiveJsepMessages(RtcId) returns (stream JsepMsg) {}
+}
+
+message RtcId {
+  string guid = 1;
+}
+
+message JsepMsg {
+  RtcId id = 1;
+  string message = 2;
+}
