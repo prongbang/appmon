@@ -22,7 +22,37 @@ Appmon is a local web console for controlling Android emulators and iOS simulato
 
 Appmon checks local tools when the server starts. When possible, it can auto-install missing developer dependencies such as Android platform tools, `idb-companion`, `fb-idb`, and `ffmpeg`.
 
-## Install
+## Quick Install
+
+For the simplest local setup on macOS:
+
+```sh
+xcode-select --install
+brew install rust android-platform-tools ffmpeg
+git clone https://github.com/prongbang/appmon.git
+cd appmon
+cp .env.example .env
+APPMON_BIND=127.0.0.1:18080 cargo run -p appmon-server
+```
+
+Then open:
+
+```text
+http://127.0.0.1:18080
+```
+
+If you already have Rust, Xcode command line tools, and Android platform tools installed, the shortest path is:
+
+```sh
+git clone https://github.com/prongbang/appmon.git
+cd appmon
+cp .env.example .env
+cargo run -p appmon-server
+```
+
+Appmon starts a local web UI and checks required tools on startup. With Homebrew available, it can also try to install missing runtime dependencies automatically.
+
+## Install Details
 
 ```sh
 git clone https://github.com/prongbang/appmon.git
