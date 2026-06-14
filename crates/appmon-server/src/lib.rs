@@ -752,8 +752,8 @@ async fn handle_emulator_webrtc_socket(mut socket: WebSocket, endpoint: String, 
         Ok(rtc_id) => rtc_id,
         Err(error) => {
             let _ = socket
-                .send(Message::Text(format!(
-                    r#"{{"error":"failed to start native emulator WebRTC: {error}"}}"#
+                .send(emulator_webrtc_error_message(format!(
+                    "failed to start native emulator WebRTC: {error}"
                 )))
                 .await;
             let _ = socket.close().await;
@@ -765,8 +765,8 @@ async fn handle_emulator_webrtc_socket(mut socket: WebSocket, endpoint: String, 
         Ok(messages) => messages,
         Err(error) => {
             let _ = socket
-                .send(Message::Text(format!(
-                    r#"{{"error":"failed to read native emulator WebRTC messages: {error}"}}"#
+                .send(emulator_webrtc_error_message(format!(
+                    "failed to read native emulator WebRTC messages: {error}"
                 )))
                 .await;
             let _ = socket.close().await;
@@ -808,6 +808,10 @@ async fn handle_emulator_webrtc_socket(mut socket: WebSocket, endpoint: String, 
             }
         }
     }
+}
+
+fn emulator_webrtc_error_message(error: String) -> Message {
+    Message::Text(serde_json::json!({ "error": error }).to_string())
 }
 
 async fn tap<R: ProcessRunner + Clone>(

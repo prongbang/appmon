@@ -128,39 +128,57 @@ fn PreviewSettingsModal() -> Element {
                     }
                 }
                 div { class: "settings-grid",
-                    select { id: "viewMode", title: "Preview mode", aria_label: "Preview mode",
-                        option { value: "poll", selected: true, "Polling" }
-                        option { value: "webrtc", "WebRTC" }
-                        option { value: "stream", "Stream" }
+                    label { id: "viewModeField", class: "settings-field",
+                        span { "Mode" }
+                        select { id: "viewMode", title: "Preview mode", aria_label: "Preview mode",
+                            option { value: "poll", selected: true, "Polling" }
+                            option { value: "webrtc", "WebRTC" }
+                            option { value: "stream", "Stream" }
+                        }
                     }
-                    select { id: "pollFps", title: "Polling FPS", aria_label: "Polling FPS",
-                        option { value: "1", "1 fps" }
-                        option { value: "2", "2 fps" }
-                        option { value: "4", selected: true, "4 fps" }
-                        option { value: "6", "6 fps" }
-                        option { value: "8", "8 fps" }
+                    label { id: "pollFpsField", class: "settings-field",
+                        span { "Polling FPS" }
+                        select { id: "pollFps", title: "Polling FPS", aria_label: "Polling FPS",
+                            option { value: "1", "1 fps" }
+                            option { value: "2", "2 fps" }
+                            option { value: "4", selected: true, "4 fps" }
+                            option { value: "6", "6 fps" }
+                            option { value: "8", "8 fps" }
+                        }
                     }
-                    select { id: "streamFps", title: "Stream FPS", aria_label: "Stream FPS",
-                        option { value: "4", "4 fps" }
-                        option { value: "8", selected: true, "8 fps" }
-                        option { value: "12", "12 fps" }
-                        option { value: "15", "15 fps" }
+                    label { id: "streamFpsField", class: "settings-field",
+                        span { "Fallback FPS" }
+                        select { id: "streamFps", title: "Fallback stream FPS", aria_label: "Fallback stream FPS",
+                            option { value: "4", "4 fps" }
+                            option { value: "8", selected: true, "8 fps" }
+                            option { value: "12", "12 fps" }
+                            option { value: "15", "15 fps" }
+                        }
                     }
-                    select { id: "streamFormat", title: "Stream format", aria_label: "Stream format",
-                        option { value: "auto", selected: true, "Auto smooth" }
-                        option { value: "native", "Fast native" }
-                        option { value: "jpeg", "Small JPEG" }
+                    label { id: "streamFormatField", class: "settings-field",
+                        span { "Fallback Format" }
+                        select { id: "streamFormat", title: "Fallback stream format", aria_label: "Fallback stream format",
+                            option { value: "auto", selected: true, "Auto smooth" }
+                            option { value: "native", "Fast native" }
+                            option { value: "jpeg", "Small JPEG" }
+                        }
                     }
-                    select { id: "streamScale", title: "Stream scale", aria_label: "Stream scale",
-                        option { value: "540", "540p" }
-                        option { value: "720", selected: true, "720p" }
-                        option { value: "1080", "1080p" }
-                        option { value: "4096", "Full" }
+                    label { id: "streamScaleField", class: "settings-field",
+                        span { "Fallback Scale" }
+                        select { id: "streamScale", title: "Fallback stream scale", aria_label: "Fallback stream scale",
+                            option { value: "540", "540p" }
+                            option { value: "720", selected: true, "720p" }
+                            option { value: "1080", "1080p" }
+                            option { value: "4096", "Full" }
+                        }
                     }
-                    select { id: "streamQuality", title: "Stream quality", aria_label: "Stream quality",
-                        option { value: "55", "Eco" }
-                        option { value: "70", selected: true, "Balanced" }
-                        option { value: "85", "Sharp" }
+                    label { id: "streamQualityField", class: "settings-field",
+                        span { "Fallback Quality" }
+                        select { id: "streamQuality", title: "Fallback stream quality", aria_label: "Fallback stream quality",
+                            option { value: "55", "Eco" }
+                            option { value: "70", selected: true, "Balanced" }
+                            option { value: "85", "Sharp" }
+                        }
                     }
                 }
                 div { id: "settingsFeedback", class: "settings-feedback", role: "status", aria_live: "polite", "Ready" }
@@ -634,6 +652,16 @@ body.preview-fullscreen-lock {
 .settings-grid {
   display: grid;
   gap: 10px;
+}
+.settings-field {
+  display: grid;
+  gap: 5px;
+}
+.settings-field span {
+  color: var(--ink-muted);
+  font-size: 11px;
+  font-weight: 760;
+  line-height: 1.2;
 }
 .settings-grid select,
 .settings-actions .btn {
@@ -1998,6 +2026,23 @@ function setSettingsFeedback(text, kind = 'success') {
     }, 2200);
   }
 }
+function updateSettingsControlVisibility() {
+  const mode = el('viewMode').value;
+  const nativeAndroidWebRtc = mode === 'webrtc' && isAndroidSelected();
+  const showField = (id, visible) => {
+    const field = el(id);
+    if (!field) return;
+    field.style.display = visible ? '' : 'none';
+  };
+  showField('pollFpsField', mode === 'poll');
+  showField('streamFpsField', mode === 'stream' || (mode === 'webrtc' && !nativeAndroidWebRtc));
+  showField('streamFormatField', mode === 'stream' || (mode === 'webrtc' && !nativeAndroidWebRtc));
+  showField('streamScaleField', mode === 'stream' || (mode === 'webrtc' && !nativeAndroidWebRtc));
+  showField('streamQualityField', mode === 'stream' || (mode === 'webrtc' && !nativeAndroidWebRtc));
+  if (nativeAndroidWebRtc) {
+    setSettingsFeedback('Native WebRTC mode: fallback quality settings are not used', 'working');
+  }
+}
 async function withSettingsButtonFeedback(buttonId, workingText, doneText, action) {
   const button = el(buttonId);
   const originalText = button.textContent;
@@ -2069,6 +2114,7 @@ function selectDevice(deviceId) {
   if (!device) return;
   state.selected = device;
   renderDevices();
+  updateSettingsControlVisibility();
   restartPreview();
   if (isMobileSidebar()) closeSidebar();
 }
@@ -2257,7 +2303,9 @@ async function startWebRtcStream() {
     } catch (err) {
       if (seq !== state.previewSeq) return;
       stopWebRtc();
-      setStatus(`Native WebRTC unavailable: ${err.message}`);
+      const message = `Native WebRTC unavailable, falling back: ${err.message}`;
+      setStatus(message);
+      setSettingsFeedback(message, 'error');
     }
   }
   try {
@@ -2277,8 +2325,8 @@ function startNativeEmulatorWebRtcStream(seq) {
     let settled = false;
     let peer = null;
     const timeout = setTimeout(() => {
-      if (!settled) reject(new Error('native emulator WebRTC timed out'));
-    }, 6000);
+      settleReject(new Error('native emulator WebRTC video timed out'));
+    }, 8000);
     const settleResolve = () => {
       if (settled) return;
       settled = true;
@@ -2341,6 +2389,7 @@ function startNativeEmulatorWebRtcStream(seq) {
           el('screenEmpty').style.display = 'none';
           video.play().catch(() => {});
           setStatus('Native emulator WebRTC video');
+          setSettingsFeedback('Native emulator WebRTC video connected', 'success');
           settleResolve();
         };
         peer.onicecandidate = event => {
@@ -2360,7 +2409,10 @@ function startNativeEmulatorWebRtcStream(seq) {
         };
         peer.onconnectionstatechange = () => {
           if (seq !== state.previewSeq || !peer) return;
-          if (peer.connectionState === 'connected') settleResolve();
+          if (peer.connectionState === 'connected' && !settled) {
+            setStatus('Native emulator WebRTC connected, waiting for video');
+            setSettingsFeedback('Native WebRTC connected, waiting for video track', 'working');
+          }
           if (peer.connectionState === 'failed' || peer.connectionState === 'disconnected') {
             if (!settled) settleReject(new Error(`native emulator WebRTC ${peer.connectionState}`));
             else setStatus('Native WebRTC lost, using Appmon WebRTC');
@@ -2376,7 +2428,10 @@ function startNativeEmulatorWebRtcStream(seq) {
       flushSignals();
     };
     socket.onopen = () => {
-      if (seq === state.previewSeq) setStatus('Native emulator WebRTC connecting');
+      if (seq === state.previewSeq) {
+        setStatus('Native emulator WebRTC connecting');
+        setSettingsFeedback('Requesting native emulator WebRTC video', 'working');
+      }
     };
     socket.onmessage = event => {
       if (seq !== state.previewSeq) return;
@@ -2709,6 +2764,7 @@ function showPreviewImage(image, url) {
 }
 function restartPreview() {
   updateDeviceNav();
+  updateSettingsControlVisibility();
   if (el('viewMode').value === 'webrtc') {
     startWebRtcStream();
   } else if (el('viewMode').value === 'stream') {
@@ -2719,6 +2775,7 @@ function restartPreview() {
 }
 function openSettings() {
   const modal = el('settingsModal');
+  updateSettingsControlVisibility();
   modal.classList.add('open');
   modal.setAttribute('aria-hidden', 'false');
   el('viewMode').focus();
@@ -3002,6 +3059,7 @@ el('shot').onclick = () => withSettingsButtonFeedback('shot', 'Capturing...', 'S
 el('viewMode').onchange = () => {
   restartPreview();
   settingsControlUpdated(`Preview mode updated to ${el('viewMode').selectedOptions[0].textContent}`);
+  updateSettingsControlVisibility();
 };
 el('pollFps').onchange = () => {
   if (el('viewMode').value === 'poll') startPolling();
