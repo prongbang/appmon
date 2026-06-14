@@ -106,7 +106,7 @@ Appmon supports multiple preview paths:
 - `Stream`: multipart stream fallback
 - `Polling`: conservative screenshot polling fallback
 
-Android input uses a persistent `adb shell` session to avoid spawning a new process for every input event. iOS touch control uses `idb` for accurate simulator coordinates. If `idb` is unavailable, tap can fall back to Simulator-window AppleScript control, but swipe, text, and key control require `idb`.
+Android input can use the Android Emulator gRPC controller when `APPMON_ANDROID_GRPC_ENDPOINT` is set, matching the same direct `sendTouch` / `sendKey` control surface used by Google's WebRTC emulator sample. If gRPC is unavailable, Appmon falls back to a persistent `adb shell` session and streams pointer gestures as `motionevent` down/move/up commands so drag and scroll feedback does not wait for pointer release. iOS touch control uses `idb` for accurate simulator coordinates. If `idb` is unavailable, tap can fall back to Simulator-window AppleScript control, but swipe, text, and key control require `idb`.
 
 ## Configuration
 
@@ -117,6 +117,7 @@ Android input uses a persistent `adb shell` session to avoid spawning a new proc
 | `APPMON_AUTO_INSTALL_DEPS` | Set to `false` to disable automatic dependency installation |
 | `ANDROID_ADB_PATH` | Path to `adb` |
 | `ANDROID_EMULATOR_PATH` | Path to the Android emulator binary |
+| `APPMON_ANDROID_GRPC_ENDPOINT` | Optional Android Emulator gRPC endpoint, for example `http://127.0.0.1:8554`. When set, Android Start adds `-grpc <port>` |
 | `IOS_XCRUN_PATH` | Path to `xcrun` |
 | `APPMON_IDB_PATH` | Path to `idb` for full iOS simulator touch control |
 | `APPMON_OSASCRIPT_PATH` | Path to `osascript` for iOS fallback control |

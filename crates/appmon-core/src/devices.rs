@@ -16,7 +16,8 @@ use tracing::info;
 use uuid::Uuid;
 
 use crate::{
-    validation, AppConfig, AppError, AppResult, CommandOutput, ProcessRunner, TokioProcessRunner,
+    android_grpc, validation, AppConfig, AppError, AppResult, CommandOutput, ProcessRunner,
+    TokioProcessRunner,
 };
 
 #[derive(Clone, Debug, PartialEq, Eq, Serialize, Deserialize)]
@@ -91,6 +92,23 @@ pub struct SwipeRequest {
     pub x2: u32,
     pub y2: u32,
     pub duration_ms: Option<u32>,
+    pub source_width: Option<u32>,
+    pub source_height: Option<u32>,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum MotionAction {
+    Down,
+    Move,
+    Up,
+}
+
+#[derive(Clone, Debug, Deserialize)]
+pub struct MotionRequest {
+    pub action: MotionAction,
+    pub x: u32,
+    pub y: u32,
     pub source_width: Option<u32>,
     pub source_height: Option<u32>,
 }
@@ -210,6 +228,14 @@ impl<R: ProcessRunner> DeviceManager<R> {
         validation::coordinate(req.y, "y")?;
         match id.kind {
             DeviceKind::Android => {
+                if let Some(endpoint) = self.android_grpc_endpoint() {
+                    match android_grpc::send_tap(endpoint, &req).await {
+                        Ok(()) => return Ok(()),
+                        Err(error) => {
+                            info!(device = %id.raw, %error, "Android gRPC tap unavailable, falling back to adb input");
+                        }
+                    }
+                }
                 self.run_android_input(
                     id,
                     format!("input tap {} {}", req.x, req.y),
@@ -256,10 +282,62 @@ impl<R: ProcessRunner> DeviceManager<R> {
         Ok(())
     }
 
+    pub async fn motion(&self, id: &DeviceId, req: MotionRequest) -> AppResult<()> {
+        validation::coordinate(req.x, "x")?;
+        validation::coordinate(req.y, "y")?;
+        match id.kind {
+            DeviceKind::Android => {
+                if let Some(endpoint) = self.android_grpc_endpoint() {
+                    match android_grpc::send_motion(endpoint, &req).await {
+                        Ok(()) => return Ok(()),
+                        Err(error) => {
+                            info!(device = %id.raw, %error, "Android gRPC motion unavailable, falling back to adb input");
+                        }
+                    }
+                }
+                self.run_android_input(
+                    id,
+                    format!(
+                        "input motionevent {} {} {}",
+                        android_motion_action(req.action),
+                        req.x,
+                        req.y
+                    ),
+                    "android_motion_fast",
+                )
+                .await?;
+            }
+            DeviceKind::Ios => match req.action {
+                MotionAction::Down | MotionAction::Move => {}
+                MotionAction::Up => {
+                    self.run_ios_idb_tap(
+                        id,
+                        &TapRequest {
+                            x: req.x,
+                            y: req.y,
+                            source_width: req.source_width,
+                            source_height: req.source_height,
+                        },
+                    )
+                    .await?;
+                }
+            },
+        }
+        Ok(())
+    }
+
     pub async fn text(&self, id: &DeviceId, req: TextRequest) -> AppResult<()> {
         validation::text_input(&req.text)?;
         match id.kind {
             DeviceKind::Android => {
+                if let Some(endpoint) = self.android_grpc_endpoint() {
+                    match android_grpc::send_text(endpoint, &req).await {
+                        Ok(()) => return Ok(()),
+                        Err(error) => {
+                            info!(device = %id.raw, %error, "Android gRPC text unavailable, falling back to adb input");
+                        }
+                    }
+                }
                 let escaped = req.text.replace(' ', "%s");
                 self.run_android_input(
                     id,
@@ -279,6 +357,14 @@ impl<R: ProcessRunner> DeviceManager<R> {
         validation::key_input(&req.key)?;
         match id.kind {
             DeviceKind::Android => {
+                if let Some(endpoint) = self.android_grpc_endpoint() {
+                    match android_grpc::send_key(endpoint, &req).await {
+                        Ok(()) => return Ok(()),
+                        Err(error) => {
+                            info!(device = %id.raw, %error, "Android gRPC key unavailable, falling back to adb input");
+                        }
+                    }
+                }
                 self.run_android_input(
                     id,
                     format!("input keyevent {}", shell_quote(&req.key)),
@@ -296,8 +382,15 @@ impl<R: ProcessRunner> DeviceManager<R> {
     pub async fn start_device(&self, id: &DeviceId) -> AppResult<()> {
         match id.kind {
             DeviceKind::Android => {
+                let mut args = vec!["-avd".to_string(), id.raw.clone()];
+                if let Some(port) = self
+                    .android_grpc_endpoint()
+                    .and_then(android_grpc_port_from_endpoint)
+                {
+                    args.extend(["-grpc".to_string(), port.to_string()]);
+                }
                 Command::new(&self.config.emulator_path)
-                    .args(["-avd", &id.raw])
+                    .args(args)
                     .stdin(Stdio::null())
                     .stdout(Stdio::null())
                     .stderr(Stdio::null())
@@ -599,6 +692,10 @@ impl<R: ProcessRunner> DeviceManager<R> {
             "android input command queued"
         );
         result
+    }
+
+    fn android_grpc_endpoint(&self) -> Option<&str> {
+        self.config.android_grpc_endpoint.as_deref()
     }
 
     async fn write_android_input(&self, id: &DeviceId, command: &str) -> AppResult<()> {
@@ -996,6 +1093,23 @@ fn scale_coordinate(value: u32, source: u32, target: u32) -> u32 {
         .unwrap_or(target.saturating_sub(1))
 }
 
+fn android_motion_action(action: MotionAction) -> &'static str {
+    match action {
+        MotionAction::Down => "DOWN",
+        MotionAction::Move => "MOVE",
+        MotionAction::Up => "UP",
+    }
+}
+
+fn android_grpc_port_from_endpoint(endpoint: &str) -> Option<u16> {
+    let without_scheme = endpoint
+        .strip_prefix("http://")
+        .or_else(|| endpoint.strip_prefix("https://"))
+        .unwrap_or(endpoint);
+    let authority = without_scheme.split('/').next().unwrap_or(without_scheme);
+    authority.rsplit_once(':')?.1.parse().ok()
+}
+
 fn parse_idb_point_dimensions(input: &str) -> Option<PointDimensions> {
     let width = parse_idb_dimension(input, "width_points")?;
     let height = parse_idb_dimension(input, "height_points")?;
@@ -1200,5 +1314,18 @@ mod tests {
     fn scales_coordinates_to_idb_points() {
         assert_eq!(scale_coordinate(660, 1320, 430), 215);
         assert_eq!(scale_coordinate(2868, 2868, 932), 931);
+    }
+
+    #[test]
+    fn extracts_android_grpc_port_from_endpoint() {
+        assert_eq!(
+            android_grpc_port_from_endpoint("http://127.0.0.1:8554"),
+            Some(8554)
+        );
+        assert_eq!(
+            android_grpc_port_from_endpoint("https://localhost:9554/foo"),
+            Some(9554)
+        );
+        assert_eq!(android_grpc_port_from_endpoint("localhost"), None);
     }
 }

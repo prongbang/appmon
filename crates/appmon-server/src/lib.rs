@@ -1,7 +1,7 @@
 use appmon_core::{
     AppError, AppInstallRequest, AppLaunchRequest, AppTerminateRequest, DeviceId, DeviceKind,
-    DeviceManager, KeyRequest, LogRequest, ProcessRunner, RecordRequest, SwipeRequest, TapRequest,
-    TextRequest,
+    DeviceManager, KeyRequest, LogRequest, MotionAction, MotionRequest, ProcessRunner,
+    RecordRequest, SwipeRequest, TapRequest, TextRequest,
 };
 use axum::{
     body::Body,
@@ -74,6 +74,7 @@ pub fn build_router<R: ProcessRunner + Clone>(controller: DeviceManager<R>) -> R
         .route("/devices/:id/webrtc/offer", post(webrtc_offer::<R>))
         .route("/devices/:id/input/tap", post(tap::<R>))
         .route("/devices/:id/input/swipe", post(swipe::<R>))
+        .route("/devices/:id/input/motion", post(motion::<R>))
         .route("/devices/:id/input/text", post(text::<R>))
         .route("/devices/:id/key", post(key::<R>))
         .route("/devices/:id/start", post(start_device::<R>))
@@ -739,6 +740,16 @@ async fn swipe<R: ProcessRunner + Clone>(
     Ok(Json(CommandResponse::ok()))
 }
 
+async fn motion<R: ProcessRunner + Clone>(
+    State(state): State<AppState<R>>,
+    Path(id): Path<String>,
+    Json(req): Json<MotionRequest>,
+) -> Result<Json<CommandResponse>, ApiError> {
+    let id = DeviceId::parse(&id)?;
+    state.controller.motion(&id, req).await?;
+    Ok(Json(CommandResponse::ok()))
+}
+
 async fn text<R: ProcessRunner + Clone>(
     State(state): State<AppState<R>>,
     Path(id): Path<String>,
@@ -909,6 +920,27 @@ async fn execute_control<R: ProcessRunner + Clone>(
                 )
                 .await?
         }
+        ControlCommand::Motion {
+            action,
+            x,
+            y,
+            source_width,
+            source_height,
+        } => {
+            state
+                .controller
+                .motion(
+                    &id,
+                    MotionRequest {
+                        action,
+                        x,
+                        y,
+                        source_width,
+                        source_height,
+                    },
+                )
+                .await?
+        }
         ControlCommand::Key { key } => state.controller.key(&id, KeyRequest { key }).await?,
         ControlCommand::Text { text } => state.controller.text(&id, TextRequest { text }).await?,
     }
@@ -995,6 +1027,13 @@ enum ControlCommand {
         x2: u32,
         y2: u32,
         duration_ms: Option<u32>,
+        source_width: Option<u32>,
+        source_height: Option<u32>,
+    },
+    Motion {
+        action: MotionAction,
+        x: u32,
+        y: u32,
         source_width: Option<u32>,
         source_height: Option<u32>,
     },
@@ -1134,6 +1173,7 @@ mod tests {
             udp_bind: None,
             adb_path: "/bin/echo".into(),
             emulator_path: "/bin/echo".into(),
+            android_grpc_endpoint: None,
             xcrun_path: "/bin/echo".into(),
             osascript_path: "/bin/echo".into(),
             idb_path: "/bin/echo".into(),

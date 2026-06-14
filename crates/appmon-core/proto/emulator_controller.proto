@@ -1,0 +1,60 @@
+syntax = "proto3";
+
+package android.emulation.control;
+
+import "google/protobuf/empty.proto";
+
+service EmulatorController {
+  rpc sendTouch(TouchEvent) returns (google.protobuf.Empty) {}
+  rpc sendMouse(MouseEvent) returns (google.protobuf.Empty) {}
+  rpc sendKey(KeyboardEvent) returns (google.protobuf.Empty) {}
+}
+
+message Touch {
+  int32 x = 1;
+  int32 y = 2;
+  int32 identifier = 3;
+  int32 pressure = 4;
+  int32 touch_major = 5;
+  int32 touch_minor = 6;
+  EventExpiration expiration = 7;
+
+  enum EventExpiration {
+    EVENT_EXPIRATION_UNSPECIFIED = 0;
+    NEVER_EXPIRE = 1;
+  }
+}
+
+message TouchEvent {
+  repeated Touch touches = 1;
+  int32 display = 2;
+}
+
+message MouseEvent {
+  int32 x = 1;
+  int32 y = 2;
+  int32 buttons = 3;
+  int32 display = 4;
+}
+
+message KeyboardEvent {
+  KeyCodeType code_type = 1;
+  KeyEventType event_type = 2;
+  int32 key_code = 3;
+  string key = 4;
+  string text = 5;
+
+  enum KeyCodeType {
+    USB = 0;
+    EVDEV = 1;
+    XKB = 2;
+    WIN = 3;
+    MAC = 4;
+  }
+
+  enum KeyEventType {
+    KEYDOWN = 0;
+    KEYUP = 1;
+    KEYPRESS = 2;
+  }
+}

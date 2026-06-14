@@ -1972,6 +1972,7 @@ const state = {
   previewUrl: null,
   previewSeq: 0,
   pointerStart: null,
+  pointerStream: null,
   pending: new Map(),
   requestSeq: 0,
   feedbackTimer: null
@@ -2690,6 +2691,14 @@ async function control(type, payload, restPath, restBody = payload) {
   }
   await post(restPath, restBody);
 }
+async function controlQuiet(type, payload, restPath, restBody = payload) {
+  const wsPromise = sendWsControl(type, payload);
+  if (wsPromise) {
+    await wsPromise;
+    return;
+  }
+  await json(restPath, { method: 'POST', body: JSON.stringify(restBody) });
+}
 function imagePoint(event) {
   return clientPointToImage(event.clientX, event.clientY);
 }
@@ -2713,6 +2722,40 @@ function clientPointToImage(clientX, clientY) {
     source_width: naturalWidth,
     source_height: naturalHeight
   };
+}
+function isAndroidSelected() {
+  return selectedPlatform() === 'android';
+}
+function sendPointerMotion(action, point) {
+  const payload = { action, ...point };
+  return controlQuiet('motion', payload, `/api/devices/${selectedId()}/input/motion`);
+}
+function clearPointerStream() {
+  if (state.pointerStream && state.pointerStream.moveTimer) {
+    clearTimeout(state.pointerStream.moveTimer);
+  }
+  state.pointerStream = null;
+}
+function queuePointerMove(point) {
+  const stream = state.pointerStream;
+  if (!stream || !stream.active) return;
+  stream.queuedMove = point;
+  const now = performance.now();
+  const elapsed = now - stream.lastMoveAt;
+  const sendMove = () => {
+    const current = state.pointerStream;
+    if (!current || !current.active || !current.queuedMove) return;
+    const move = current.queuedMove;
+    current.queuedMove = null;
+    current.moveTimer = null;
+    current.lastMoveAt = performance.now();
+    sendPointerMotion('move', move).catch(err => setStatus(err.message));
+  };
+  if (elapsed >= 16) {
+    sendMove();
+  } else if (!stream.moveTimer) {
+    stream.moveTimer = setTimeout(sendMove, Math.max(1, 16 - elapsed));
+  }
 }
 async function sendPointerCommand(start, end) {
   const dx = Math.abs(end.x - start.x);
@@ -2847,51 +2890,57 @@ el('terminate').onclick = () => post(`/api/devices/${selectedId()}/app/terminate
 el('recordStart').onclick = () => withSettingsButtonFeedback('recordStart', 'Starting...', 'Recording started', () => post(`/api/devices/${selectedId()}/record/start`, {}));
 el('recordStop').onclick = () => withSettingsButtonFeedback('recordStop', 'Stopping...', 'Recording stopped', () => post(`/api/devices/${selectedId()}/record/stop`, {}));
 function setupScreenControls() {
-  if (window.interact) {
-    document.body.dataset.touchBackend = 'interact.js';
-    interact('#screenWrap')
-      .draggable({
-        listeners: {
-          end(event) {
-            try {
-              if (!state.selected) throw new Error('Select a device first');
-              const start = pagePointToImage(event.x0, event.y0);
-              const end = pagePointToImage(event.pageX, event.pageY);
-              if (Math.abs(end.x - start.x) >= 8 || Math.abs(end.y - start.y) >= 8) {
-                sendPointerCommand(start, end).catch(err => setStatus(err.message));
-              }
-            } catch (err) {
-              setStatus(err.message);
-            }
-          }
-        }
-      })
-      .on('tap', event => {
-        try {
-          if (!state.selected) throw new Error('Select a device first');
-          const point = imagePoint(event);
-          event.preventDefault();
-          sendPointerCommand(point, point).catch(err => setStatus(err.message));
-        } catch (err) {
-          setStatus(err.message);
-        }
-      });
-    return;
-  }
-
-  document.body.dataset.touchBackend = 'pointer-events-fallback';
-  el('screenWrap').addEventListener('pointerdown', event => {
+  const screen = el('screenWrap');
+  document.body.dataset.touchBackend = 'pointer-stream';
+  screen.addEventListener('pointerdown', event => {
     try {
       if (!state.selected) throw new Error('Select a device first');
-      el('screenWrap').setPointerCapture(event.pointerId);
-      state.pointerStart = imagePoint(event);
+      screen.setPointerCapture(event.pointerId);
+      const point = imagePoint(event);
+      if (isAndroidSelected()) {
+        clearPointerStream();
+        state.pointerStream = {
+          active: true,
+          pointerId: event.pointerId,
+          start: point,
+          lastMoveAt: performance.now(),
+          queuedMove: null,
+          moveTimer: null
+        };
+        sendPointerMotion('down', point).catch(err => setStatus(err.message));
+      } else {
+        state.pointerStart = point;
+      }
       event.preventDefault();
     } catch (err) {
       setStatus(err.message);
     }
   });
-  el('screenWrap').addEventListener('pointerup', event => {
+  screen.addEventListener('pointermove', event => {
     try {
+      if (!state.pointerStream || state.pointerStream.pointerId !== event.pointerId) return;
+      if (!isAndroidSelected()) return;
+      queuePointerMove(imagePoint(event));
+      event.preventDefault();
+    } catch (err) {
+      setStatus(err.message);
+    }
+  });
+  screen.addEventListener('pointerup', event => {
+    try {
+      if (state.pointerStream && state.pointerStream.pointerId === event.pointerId) {
+        const stream = state.pointerStream;
+        const end = imagePoint(event);
+        if (stream.queuedMove) {
+          sendPointerMotion('move', stream.queuedMove).catch(err => setStatus(err.message));
+        }
+        clearPointerStream();
+        event.preventDefault();
+        sendPointerMotion('up', end)
+          .then(() => setStatus(`Pointer ${end.x}, ${end.y}`))
+          .catch(err => setStatus(err.message));
+        return;
+      }
       if (!state.pointerStart) return;
       const start = state.pointerStart;
       state.pointerStart = null;
@@ -2902,7 +2951,14 @@ function setupScreenControls() {
       setStatus(err.message);
     }
   });
-  el('screenWrap').addEventListener('pointercancel', () => { state.pointerStart = null; });
+  screen.addEventListener('pointercancel', event => {
+    if (state.pointerStream && state.pointerStream.pointerId === event.pointerId) {
+      const point = state.pointerStream.queuedMove || state.pointerStream.start;
+      clearPointerStream();
+      sendPointerMotion('up', point).catch(err => setStatus(err.message));
+    }
+    state.pointerStart = null;
+  });
 }
 setupScreenControls();
 connectWs();

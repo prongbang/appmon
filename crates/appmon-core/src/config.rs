@@ -8,6 +8,7 @@ pub struct AppConfig {
     pub udp_bind: Option<SocketAddr>,
     pub adb_path: PathBuf,
     pub emulator_path: PathBuf,
+    pub android_grpc_endpoint: Option<String>,
     pub xcrun_path: PathBuf,
     pub osascript_path: PathBuf,
     pub idb_path: PathBuf,
@@ -42,6 +43,12 @@ impl AppConfig {
             emulator_path: env::var("ANDROID_EMULATOR_PATH")
                 .unwrap_or_else(|_| default_emulator_path().display().to_string())
                 .into(),
+            android_grpc_endpoint: appmon_env(
+                "APPMON_ANDROID_GRPC_ENDPOINT",
+                "APPMO_ANDROID_GRPC_ENDPOINT",
+            )
+            .ok()
+            .filter(|value| !value.eq_ignore_ascii_case("off") && !value.is_empty()),
             xcrun_path: env::var("IOS_XCRUN_PATH")
                 .unwrap_or_else(|_| "/usr/bin/xcrun".to_string())
                 .into(),
