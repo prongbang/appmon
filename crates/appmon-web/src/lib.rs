@@ -132,8 +132,8 @@ fn PreviewSettingsModal() -> Element {
                     label { id: "viewModeField", class: "settings-field",
                         span { "Mode" }
                         select { id: "viewMode", title: "Preview mode", aria_label: "Preview mode",
-                            option { value: "poll", selected: true, "Polling" }
-                            option { value: "webrtc", "WebRTC" }
+                            option { value: "webrtc", selected: true, "WebRTC" }
+                            option { value: "poll", "Polling" }
                             option { value: "stream", "Stream" }
                         }
                     }
@@ -148,25 +148,26 @@ fn PreviewSettingsModal() -> Element {
                         }
                     }
                     label { id: "streamFpsField", class: "settings-field",
-                        span { "Fallback FPS" }
-                        select { id: "streamFps", title: "Fallback stream FPS", aria_label: "Fallback stream FPS",
+                        span { "Video FPS" }
+                        select { id: "streamFps", title: "WebRTC and fallback stream FPS", aria_label: "WebRTC and fallback stream FPS",
                             option { value: "4", "4 fps" }
-                            option { value: "8", selected: true, "8 fps" }
+                            option { value: "8", "8 fps" }
                             option { value: "12", "12 fps" }
-                            option { value: "15", "15 fps" }
+                            option { value: "15", selected: true, "15 fps" }
+                            option { value: "20", "20 fps" }
                         }
                     }
                     label { id: "streamFormatField", class: "settings-field",
-                        span { "Fallback Format" }
-                        select { id: "streamFormat", title: "Fallback stream format", aria_label: "Fallback stream format",
-                            option { value: "auto", selected: true, "Auto smooth" }
+                        span { "Transport" }
+                        select { id: "streamFormat", title: "WebRTC transport preference", aria_label: "WebRTC transport preference",
+                            option { value: "auto", selected: true, "Appmon WebRTC" }
                             option { value: "video", "Fast video" }
-                            option { value: "native", "Fast native" }
+                            option { value: "native", "Native emulator" }
                             option { value: "jpeg", "Small JPEG" }
                         }
                     }
                     label { id: "streamScaleField", class: "settings-field",
-                        span { "Fallback Scale" }
+                        span { "Scale" }
                         select { id: "streamScale", title: "Fallback stream scale", aria_label: "Fallback stream scale",
                             option { value: "540", "540p" }
                             option { value: "720", selected: true, "720p" }
@@ -175,7 +176,7 @@ fn PreviewSettingsModal() -> Element {
                         }
                     }
                     label { id: "streamQualityField", class: "settings-field",
-                        span { "Fallback Quality" }
+                        span { "Quality" }
                         select { id: "streamQuality", title: "Fallback stream quality", aria_label: "Fallback stream quality",
                             option { value: "55", "Eco" }
                             option { value: "70", selected: true, "Balanced" }
@@ -2010,6 +2011,11 @@ const state = {
   webrtcSession: null,
   webrtcMode: null,
   webrtcFrames: new Map(),
+  webrtcWatchdog: null,
+  webrtcFramePoll: null,
+  videoFrameCallbackId: null,
+  latestWebRtcFrameSeq: 0,
+  latestVideoFrameAt: 0,
   previewUrl: null,
   previewSeq: 0,
   pointerStart: null,
@@ -2040,20 +2046,16 @@ function setSettingsFeedback(text, kind = 'success') {
 }
 function updateSettingsControlVisibility() {
   const mode = el('viewMode').value;
-  const nativeAndroidWebRtc = mode === 'webrtc' && isAndroidSelected();
   const showField = (id, visible) => {
     const field = el(id);
     if (!field) return;
     field.style.display = visible ? '' : 'none';
   };
   showField('pollFpsField', mode === 'poll');
-  showField('streamFpsField', mode === 'stream' || (mode === 'webrtc' && !nativeAndroidWebRtc));
-  showField('streamFormatField', mode === 'stream' || (mode === 'webrtc' && !nativeAndroidWebRtc));
-  showField('streamScaleField', mode === 'stream' || (mode === 'webrtc' && !nativeAndroidWebRtc));
-  showField('streamQualityField', mode === 'stream' || (mode === 'webrtc' && !nativeAndroidWebRtc));
-  if (nativeAndroidWebRtc) {
-    setSettingsFeedback('Native WebRTC mode: fallback quality settings are not used', 'working');
-  }
+  showField('streamFpsField', mode !== 'poll');
+  showField('streamFormatField', mode !== 'poll');
+  showField('streamScaleField', mode !== 'poll');
+  showField('streamQualityField', mode !== 'poll');
 }
 async function withSettingsButtonFeedback(buttonId, workingText, doneText, action) {
   const button = el(buttonId);
@@ -2111,15 +2113,21 @@ function selectedPlatform() {
   return state.selected ? devicePlatform(state.selected) : 'unknown';
 }
 function effectiveStreamSettings() {
-  const format = el('streamFormat').value;
-  const androidAuto = selectedPlatform() === 'android' && format === 'auto';
+  const requestedFormat = el('streamFormat').value;
+  const format = requestedFormat === 'native' && selectedPlatform() !== 'android'
+    ? 'auto'
+    : requestedFormat;
+  const mode = el('viewMode').value;
   const selectedFps = Number(el('streamFps').value) || 8;
+  const fps = mode === 'stream'
+    ? Math.min(selectedFps, 15)
+    : Math.max(selectedFps, 12);
   return {
-    fps: androidAuto ? Math.max(selectedFps, 12) : selectedFps,
+    fps,
     format,
     maxWidth: Number(el('streamScale').value) || 720,
     quality: Number(el('streamQuality').value) || 70,
-    label: androidAuto ? 'ANDROID FAST' : format.toUpperCase()
+    label: `${format === 'auto' ? 'APPMON' : format.toUpperCase()} ${fps}FPS`
   };
 }
 function selectDevice(deviceId) {
@@ -2314,27 +2322,61 @@ async function startWebRtcStream() {
   }
 
   const seq = ++state.previewSeq;
-  if (isAndroidSelected()) {
+  const stream = effectiveStreamSettings();
+  if (isAndroidSelected() && stream.format === 'native') {
     try {
       await startNativeEmulatorWebRtcStream(seq);
       return;
     } catch (err) {
       if (seq !== state.previewSeq) return;
       stopWebRtc();
-      const message = `Native WebRTC unavailable, falling back: ${err.message}`;
+      const message = `Native WebRTC unavailable, using Appmon video: ${err.message}`;
       setStatus(message);
-      setSettingsFeedback(message, 'error');
-      startScreenshotStream();
-      return;
+      setSettingsFeedback(message, 'working');
     }
   }
+  await startAppmonWebRtcStream(seq);
+}
+async function startAppmonWebRtcStream(seq) {
+  const stream = effectiveStreamSettings();
+  if (stream.format !== 'video') {
+    try {
+      await startWebRtcDataStream(seq);
+    } catch (dataErr) {
+      if (seq !== state.previewSeq) return;
+      setStatus(`WebRTC unavailable: ${dataErr.message}`);
+      startScreenshotStream();
+    }
+    return;
+  }
+
+  await startWebRtcMediaFirstStream(seq);
+}
+async function startWebRtcMediaFirstStream(seq) {
+  const mediaTransports = [
+    { transport: 'media_h264', label: 'H.264' },
+    { transport: 'media_vp8', label: 'VP8' }
+  ];
+  let mediaErr = null;
+  for (const media of mediaTransports) {
+    try {
+      await startWebRtcMediaStream(seq, media);
+      return;
+    } catch (err) {
+      if (seq !== state.previewSeq) return;
+      mediaErr = err;
+      stopWebRtc();
+      setStatus(`WebRTC ${media.label} unavailable: ${err.message}`);
+    }
+  }
+
   try {
-    await startWebRtcMediaStream(seq);
-  } catch (err) {
-    if (seq !== state.previewSeq) return;
-    stopWebRtc();
-    setStatus(`WebRTC video unavailable: ${err.message}`);
     await startWebRtcDataStream(seq);
+  } catch (dataErr) {
+    if (seq !== state.previewSeq) return;
+    const mediaMessage = mediaErr ? `${mediaErr.message}; ` : '';
+    setStatus(`WebRTC unavailable: ${mediaMessage}${dataErr.message}`);
+    startScreenshotStream();
   }
 }
 function startNativeEmulatorWebRtcStream(seq) {
@@ -2408,6 +2450,17 @@ function startNativeEmulatorWebRtcStream(seq) {
           video.style.display = 'block';
           el('screenCanvas').style.display = 'none';
           el('screenEmpty').style.display = 'none';
+          trackVideoFrames(video, seq);
+          startWebRtcVideoWatchdog(seq, 'Native WebRTC', () => {
+            setStatus('Native WebRTC stalled, using Appmon video');
+            stopWebRtc();
+            startAppmonWebRtcStream(++state.previewSeq).catch(err => {
+              if (el('viewMode').value === 'webrtc') {
+                setStatus(`WebRTC unavailable: ${err.message}`);
+                startScreenshotStream();
+              }
+            });
+          });
           video.play().catch(() => {});
           setStatus('Native emulator WebRTC video');
           setSettingsFeedback('Native emulator WebRTC video connected', 'success');
@@ -2436,7 +2489,16 @@ function startNativeEmulatorWebRtcStream(seq) {
           }
           if (peer.connectionState === 'failed' || peer.connectionState === 'disconnected') {
             if (!settled) settleReject(new Error(`native emulator WebRTC ${peer.connectionState}`));
-            else setStatus('Native WebRTC lost, using Appmon WebRTC');
+            else {
+              setStatus('Native WebRTC lost, using Appmon video');
+              stopWebRtc();
+              startAppmonWebRtcStream(++state.previewSeq).catch(err => {
+                if (el('viewMode').value === 'webrtc') {
+                  setStatus(`WebRTC unavailable: ${err.message}`);
+                  startScreenshotStream();
+                }
+              });
+            }
           }
         };
       }
@@ -2469,28 +2531,109 @@ function startNativeEmulatorWebRtcStream(seq) {
     state.emulatorRtcSocket = socket;
   });
 }
-async function startWebRtcMediaStream(seq) {
+function trackVideoFrames(video, seq) {
+  state.latestVideoFrameAt = performance.now();
+  if (state.videoFrameCallbackId && video.cancelVideoFrameCallback) {
+    try { video.cancelVideoFrameCallback(state.videoFrameCallbackId); } catch (_) {}
+  }
+  state.videoFrameCallbackId = null;
+  if (video.requestVideoFrameCallback) {
+    const onFrame = () => {
+      if (seq !== state.previewSeq) return;
+      state.latestVideoFrameAt = performance.now();
+      state.videoFrameCallbackId = video.requestVideoFrameCallback(onFrame);
+    };
+    state.videoFrameCallbackId = video.requestVideoFrameCallback(onFrame);
+    return;
+  }
+  let lastTime = video.currentTime;
+  state.webrtcFramePoll = setInterval(() => {
+    if (seq !== state.previewSeq) return;
+    if (video.readyState >= 2 && video.currentTime !== lastTime) {
+      lastTime = video.currentTime;
+      state.latestVideoFrameAt = performance.now();
+    }
+  }, 500);
+}
+function startWebRtcVideoWatchdog(seq, label, onStalled) {
+  clearInterval(state.webrtcWatchdog);
+  state.webrtcWatchdog = setInterval(() => {
+    if (seq !== state.previewSeq || el('viewMode').value !== 'webrtc') return;
+    const video = el('screenVideo');
+    const stalledFor = performance.now() - state.latestVideoFrameAt;
+    if (video.style.display !== 'none' && stalledFor > 3500) {
+      clearInterval(state.webrtcWatchdog);
+      state.webrtcWatchdog = null;
+      setSettingsFeedback(`${label} stalled; switching transport`, 'working');
+      onStalled();
+    }
+  }, 1000);
+}
+async function startWebRtcMediaStream(seq, media) {
   const peer = new RTCPeerConnection({ iceServers: [] });
   state.webrtcPeer = peer;
-  state.webrtcMode = 'media';
+  state.webrtcMode = media.transport;
   state.webrtcFrames.clear();
+  let mediaReady = false;
+  let mediaReadyTimer = null;
+  let rejectMediaReady = () => {};
+  const mediaReadyPromise = new Promise((resolve, reject) => {
+    rejectMediaReady = reject;
+    mediaReadyTimer = setTimeout(() => {
+      if (!mediaReady) reject(new Error('WebRTC video did not receive frames'));
+    }, media.timeoutMs || 5000);
+    const resolveReady = () => {
+      if (mediaReady) return;
+      mediaReady = true;
+      clearTimeout(mediaReadyTimer);
+      resolve();
+    };
+    peer._appmonResolveMediaReady = resolveReady;
+  });
   peer.addTransceiver('video', { direction: 'recvonly' });
   peer.ontrack = event => {
-    if (seq !== state.previewSeq || !event.streams.length) return;
+    if (seq !== state.previewSeq) return;
     const video = el('screenVideo');
     el('screenStream').style.display = 'none';
-    video.srcObject = event.streams[0];
+    video.srcObject = event.streams && event.streams.length
+      ? event.streams[0]
+      : new MediaStream([event.track]);
     video.style.display = 'block';
     el('screenCanvas').style.display = 'none';
     el('screenEmpty').style.display = 'none';
+    trackVideoFrames(video, seq);
+    startWebRtcVideoWatchdog(seq, `WebRTC ${media.label}`, () => {
+      setStatus(`WebRTC ${media.label} stalled, using data channel`);
+      stopWebRtc();
+      startWebRtcDataStream(++state.previewSeq).catch(err => {
+        if (el('viewMode').value === 'webrtc') {
+          setStatus(`WebRTC unavailable: ${err.message}`);
+          startScreenshotStream();
+        }
+      });
+    });
+    const markReady = () => {
+      if (seq !== state.previewSeq) return;
+      if (!video.videoWidth && video.readyState < 2) return;
+      const stream = effectiveStreamSettings();
+      setStatus(`WebRTC ${media.label} video ${stream.fps} fps`);
+      setSettingsFeedback(`WebRTC ${media.label} video connected`, 'success');
+      if (peer._appmonResolveMediaReady) peer._appmonResolveMediaReady();
+    };
+    video.onloadedmetadata = markReady;
+    video.onloadeddata = markReady;
+    video.onplaying = markReady;
     video.play().catch(() => {});
-    const stream = effectiveStreamSettings();
-    setStatus(`WebRTC video ${stream.fps} fps`);
+    markReady();
   };
   peer.onconnectionstatechange = () => {
     if (seq !== state.previewSeq) return;
     if (peer.connectionState === 'failed' || peer.connectionState === 'disconnected') {
-      setStatus('WebRTC video lost, using data channel');
+      if (!mediaReady) {
+        rejectMediaReady(new Error(`WebRTC video ${peer.connectionState}`));
+        return;
+      }
+      setStatus(`WebRTC ${media.label} lost, using data channel`);
       stopWebRtc();
       startWebRtcDataStream(++state.previewSeq).catch(err => {
         if (el('viewMode').value === 'webrtc') {
@@ -2505,11 +2648,12 @@ async function startWebRtcMediaStream(seq) {
   await peer.setLocalDescription(offer);
   await waitForIceGathering(peer);
   if (seq !== state.previewSeq) return;
-  const response = await postWebRtcOffer('media', peer.localDescription);
+  const response = await postWebRtcOffer(media.transport, peer.localDescription);
   if (seq !== state.previewSeq) return;
   state.webrtcSession = response.session_id;
   await peer.setRemoteDescription(response.answer);
-  setStatus('WebRTC video connecting');
+  setStatus(`WebRTC ${media.label} video connecting`);
+  await mediaReadyPromise;
 }
 async function startWebRtcDataStream(seq) {
   if (seq !== state.previewSeq) return;
@@ -2527,6 +2671,7 @@ async function startWebRtcDataStream(seq) {
   channel.onopen = () => {
     const stream = effectiveStreamSettings();
     setStatus(`WebRTC ${stream.fps} fps / ${stream.label}`);
+    setSettingsFeedback('WebRTC data channel connected', 'success');
   };
   channel.onclose = () => {
     if (seq === state.previewSeq && el('viewMode').value === 'webrtc') setStatus('WebRTC stream closed');
@@ -2598,6 +2743,10 @@ function stopPreview() {
   state.previewSeq++;
 }
 function stopWebRtc() {
+  clearInterval(state.webrtcWatchdog);
+  clearInterval(state.webrtcFramePoll);
+  state.webrtcWatchdog = null;
+  state.webrtcFramePoll = null;
   if (state.emulatorRtcSocket) {
     state.emulatorRtcSocket.onopen = null;
     state.emulatorRtcSocket.onmessage = null;
@@ -2607,16 +2756,25 @@ function stopWebRtc() {
     state.emulatorRtcSocket = null;
   }
   state.webrtcFrames.clear();
+  state.latestWebRtcFrameSeq = 0;
   state.webrtcSession = null;
   state.webrtcMode = null;
   const video = el('screenVideo');
   const canvas = el('screenCanvas');
   const streamImage = el('screenStream');
+  if (state.videoFrameCallbackId && video.cancelVideoFrameCallback) {
+    try { video.cancelVideoFrameCallback(state.videoFrameCallbackId); } catch (_) {}
+  }
+  state.videoFrameCallbackId = null;
+  state.latestVideoFrameAt = 0;
   streamImage.onload = null;
   streamImage.onerror = null;
   streamImage.removeAttribute('src');
   streamImage.style.display = 'none';
   video.pause();
+  video.onloadedmetadata = null;
+  video.onloadeddata = null;
+  video.onplaying = null;
   video.removeAttribute('src');
   video.srcObject = null;
   video.style.display = 'none';
@@ -2717,6 +2875,7 @@ async function handleWebRtcFrame(data, seq) {
   if (!(flags & 2)) return;
 
   state.webrtcFrames.delete(frameSeq);
+  if (frameSeq <= state.latestWebRtcFrameSeq) return;
   const merged = new Uint8Array(frame.totalLength || frame.received);
   let offset = 0;
   for (const part of frame.chunks) {
@@ -2730,6 +2889,11 @@ async function handleWebRtcFrame(data, seq) {
     URL.revokeObjectURL(url);
     return;
   }
+  if (frameSeq <= state.latestWebRtcFrameSeq) {
+    URL.revokeObjectURL(url);
+    return;
+  }
+  state.latestWebRtcFrameSeq = frameSeq;
   showPreviewImage(image, url);
   await nextAnimationFrame();
 }

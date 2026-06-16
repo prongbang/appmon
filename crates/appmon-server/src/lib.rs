@@ -39,7 +39,7 @@ use webrtc::media::Sample;
 use webrtc::{
     api::{
         interceptor_registry::register_default_interceptors,
-        media_engine::{MediaEngine, MIME_TYPE_VP8},
+        media_engine::{MediaEngine, MIME_TYPE_H264, MIME_TYPE_VP8},
         APIBuilder,
     },
     data_channel::{data_channel_state::RTCDataChannelState, RTCDataChannel},
@@ -187,17 +187,14 @@ async fn screenshot_stream<R: ProcessRunner + Clone>(
                 let frame_started = Instant::now();
                 match controller.screenshot(&id).await {
                     Ok(screenshot) => {
-                        let encode_jpeg = match stream_format.as_str() {
-                            "jpeg" => true,
-                            "native" => false,
-                            _ => {
-                                id.kind != DeviceKind::Android
-                                    && screenshot.content_type != "image/jpeg"
-                            }
-                        };
+                        let encode_jpeg = should_encode_preview_frame(&stream_format);
                         let frame = if encode_jpeg {
-                            encode_stream_frame(&screenshot.bytes, max_width, quality)
-                                .unwrap_or_else(|_| (screenshot.content_type, screenshot.bytes))
+                            encode_preview_frame(
+                                screenshot.content_type,
+                                screenshot.bytes,
+                                max_width,
+                                quality,
+                            )
                         } else {
                             (screenshot.content_type, screenshot.bytes)
                         };
@@ -315,6 +312,25 @@ fn encode_stream_frame(
     Ok(("image/jpeg", encoded))
 }
 
+fn should_encode_preview_frame(stream_format: &str) -> bool {
+    !matches!(stream_format, "native")
+}
+
+fn encode_preview_frame(
+    content_type: &'static str,
+    bytes: Vec<u8>,
+    max_width: u32,
+    quality: u8,
+) -> (&'static str, Vec<u8>) {
+    if content_type == "image/jpeg" && max_width >= 4096 {
+        return (content_type, bytes);
+    }
+    match encode_stream_frame(&bytes, max_width, quality) {
+        Ok(frame) => frame,
+        Err(_) => (content_type, bytes),
+    }
+}
+
 #[derive(Debug, Deserialize)]
 struct WebRtcOfferRequest {
     offer: RTCSessionDescription,
@@ -330,6 +346,44 @@ struct WebRtcOfferRequest {
 enum WebRtcTransport {
     Data,
     Media,
+    MediaH264,
+    MediaVp8,
+}
+
+#[derive(Clone, Copy, Debug)]
+enum WebRtcVideoCodec {
+    H264,
+    Vp8,
+}
+
+impl WebRtcTransport {
+    fn video_codec(self) -> Option<WebRtcVideoCodec> {
+        match self {
+            Self::Data => None,
+            Self::Media | Self::MediaH264 => Some(WebRtcVideoCodec::H264),
+            Self::MediaVp8 => Some(WebRtcVideoCodec::Vp8),
+        }
+    }
+}
+
+impl WebRtcVideoCodec {
+    fn capability(self) -> RTCRtpCodecCapability {
+        match self {
+            Self::H264 => RTCRtpCodecCapability {
+                mime_type: MIME_TYPE_H264.to_string(),
+                clock_rate: 90_000,
+                sdp_fmtp_line:
+                    "level-asymmetry-allowed=1;packetization-mode=1;profile-level-id=42e01f"
+                        .to_string(),
+                ..Default::default()
+            },
+            Self::Vp8 => RTCRtpCodecCapability {
+                mime_type: MIME_TYPE_VP8.to_string(),
+                clock_rate: 90_000,
+                ..Default::default()
+            },
+        }
+    }
 }
 
 #[derive(Debug, Serialize)]
@@ -352,7 +406,7 @@ async fn webrtc_offer<R: ProcessRunner + Clone>(
     let max_width = req.max_width.unwrap_or(720).clamp(240, 4096);
     let quality = req.quality.unwrap_or(70).clamp(35, 95);
     let session_id = Uuid::new_v4();
-    let transport = req.transport.unwrap_or(WebRtcTransport::Data);
+    let transport = req.transport.unwrap_or(WebRtcTransport::MediaH264);
 
     let mut media_engine = MediaEngine::default();
     media_engine
@@ -370,12 +424,9 @@ async fn webrtc_offer<R: ProcessRunner + Clone>(
             .map_err(webrtc_api_error)?,
     );
 
-    if transport == WebRtcTransport::Media {
+    if let Some(codec) = transport.video_codec() {
         let track = Arc::new(TrackLocalStaticSample::new(
-            RTCRtpCodecCapability {
-                mime_type: MIME_TYPE_VP8.to_string(),
-                ..Default::default()
-            },
+            codec.capability(),
             "appmon-video".to_string(),
             "appmon-preview".to_string(),
         ));
@@ -388,6 +439,7 @@ async fn webrtc_offer<R: ProcessRunner + Clone>(
             id.clone(),
             track,
             Arc::clone(&peer_connection),
+            codec,
             WebRtcStreamSettings {
                 fps,
                 stream_format: stream_format.clone(),
@@ -479,13 +531,15 @@ async fn send_webrtc_video_preview<R: ProcessRunner + Clone>(
     id: DeviceId,
     track: Arc<TrackLocalStaticSample>,
     peer_connection: Arc<RTCPeerConnection>,
+    codec: WebRtcVideoCodec,
     settings: WebRtcStreamSettings,
 ) {
-    if let Err(error) = run_vp8_encoder_preview(
+    if let Err(error) = run_video_encoder_preview(
         controller,
         id.clone(),
         track,
         Arc::clone(&peer_connection),
+        codec,
         settings,
     )
     .await
@@ -495,11 +549,12 @@ async fn send_webrtc_video_preview<R: ProcessRunner + Clone>(
     let _ = peer_connection.close().await;
 }
 
-async fn run_vp8_encoder_preview<R: ProcessRunner + Clone>(
+async fn run_video_encoder_preview<R: ProcessRunner + Clone>(
     controller: DeviceManager<R>,
     id: DeviceId,
     track: Arc<TrackLocalStaticSample>,
     peer_connection: Arc<RTCPeerConnection>,
+    codec: WebRtcVideoCodec,
     settings: WebRtcStreamSettings,
 ) -> Result<(), String> {
     let frame_delay = Duration::from_millis(1_000 / u64::from(settings.fps));
@@ -519,143 +574,474 @@ async fn run_vp8_encoder_preview<R: ProcessRunner + Clone>(
         }
     }
 
+    let encoder_input = encoder_input_for(&id);
+    let ffmpeg_args = match codec {
+        WebRtcVideoCodec::H264 => build_h264_ffmpeg_args(encoder_input, &settings),
+        WebRtcVideoCodec::Vp8 => build_vp8_ffmpeg_args(encoder_input, &settings),
+    };
     let mut child = Command::new("ffmpeg")
-        .args([
-            "-hide_banner",
-            "-loglevel",
-            "error",
-            "-fflags",
-            "nobuffer",
-            "-flags",
-            "low_delay",
-            "-f",
-            "mjpeg",
-            "-framerate",
-            &settings.fps.to_string(),
-            "-i",
-            "pipe:0",
-            "-an",
-            "-c:v",
-            "libvpx",
-            "-deadline",
-            "realtime",
-            "-cpu-used",
-            "8",
-            "-lag-in-frames",
-            "0",
-            "-auto-alt-ref",
-            "0",
-            "-error-resilient",
-            "1",
-            "-g",
-            "30",
-            "-quality",
-            "realtime",
-            "-f",
-            "ivf",
-            "pipe:1",
-        ])
+        .args(&ffmpeg_args)
         .stdin(Stdio::piped())
         .stdout(Stdio::piped())
         .stderr(Stdio::null())
         .spawn()
         .map_err(|error| format!("failed to start ffmpeg: {error}"))?;
 
-    let mut stdin = child
+    let stdin = child
         .stdin
         .take()
         .ok_or_else(|| "ffmpeg stdin is unavailable".to_string())?;
-    let mut stdout = child
+    let stdout = child
         .stdout
         .take()
         .ok_or_else(|| "ffmpeg stdout is unavailable".to_string())?;
 
-    let writer_id = id.clone();
-    let writer_peer = Arc::clone(&peer_connection);
-    let writer_settings = settings.clone();
-    let writer = async move {
+    let writer = send_encoder_input(
+        controller,
+        id.clone(),
+        stdin,
+        Arc::clone(&peer_connection),
+        settings.clone(),
+        encoder_input,
+    );
+
+    let reader = async move {
+        match codec {
+            WebRtcVideoCodec::H264 => read_h264_encoder_output(stdout, track, frame_delay).await,
+            WebRtcVideoCodec::Vp8 => read_vp8_encoder_output(stdout, track, frame_delay).await,
+        }
+    };
+
+    let result = tokio::select! {
+        result = writer => result,
+        result = reader => result,
+    };
+    let _ = child.kill().await;
+    let _ = child.wait().await;
+    result?;
+    Ok(())
+}
+
+async fn read_vp8_encoder_output(
+    mut stdout: tokio::process::ChildStdout,
+    track: Arc<TrackLocalStaticSample>,
+    frame_delay: Duration,
+) -> Result<(), String> {
+    let mut file_header = [0_u8; 32];
+    stdout
+        .read_exact(&mut file_header)
+        .await
+        .map_err(|error| format!("ffmpeg ivf header read failed: {error}"))?;
+    loop {
+        let mut frame_header = [0_u8; 12];
+        stdout
+            .read_exact(&mut frame_header)
+            .await
+            .map_err(|error| format!("ffmpeg ivf frame header read failed: {error}"))?;
+        let frame_len = u32::from_le_bytes([
+            frame_header[0],
+            frame_header[1],
+            frame_header[2],
+            frame_header[3],
+        ]) as usize;
+        if frame_len == 0 || frame_len > 8 * 1024 * 1024 {
+            return Err(format!(
+                "ffmpeg emitted invalid VP8 frame length: {frame_len}"
+            ));
+        }
+        let mut frame = vec![0_u8; frame_len];
+        stdout
+            .read_exact(&mut frame)
+            .await
+            .map_err(|error| format!("ffmpeg ivf frame read failed: {error}"))?;
+        write_video_sample(&track, frame, frame_delay).await?;
+    }
+}
+
+async fn read_h264_encoder_output(
+    mut stdout: tokio::process::ChildStdout,
+    track: Arc<TrackLocalStaticSample>,
+    frame_delay: Duration,
+) -> Result<(), String> {
+    let mut pending = Vec::new();
+    let mut access_unit = Vec::new();
+    let mut buffer = [0_u8; 32 * 1024];
+
+    loop {
+        let size = stdout
+            .read(&mut buffer)
+            .await
+            .map_err(|error| format!("ffmpeg h264 stream read failed: {error}"))?;
+        if size == 0 {
+            if !access_unit.is_empty() {
+                write_video_sample(&track, access_unit, frame_delay).await?;
+            }
+            return Err("ffmpeg h264 stream ended".to_string());
+        }
+
+        pending.extend_from_slice(&buffer[..size]);
+        for nalu in drain_complete_annexb_nalus(&mut pending) {
+            let nalu_type = h264_nalu_type(&nalu);
+            if nalu_type == Some(9) && !access_unit.is_empty() {
+                write_video_sample(&track, std::mem::take(&mut access_unit), frame_delay).await?;
+            }
+            access_unit.extend_from_slice(&nalu);
+        }
+    }
+}
+
+async fn write_video_sample(
+    track: &TrackLocalStaticSample,
+    frame: Vec<u8>,
+    frame_delay: Duration,
+) -> Result<(), String> {
+    track
+        .write_sample(&Sample {
+            data: Bytes::from(frame),
+            duration: frame_delay,
+            ..Default::default()
+        })
+        .await
+        .map_err(|error| format!("WebRTC video sample write failed: {error}"))
+}
+
+fn drain_complete_annexb_nalus(buffer: &mut Vec<u8>) -> Vec<Vec<u8>> {
+    let mut starts = annexb_start_codes(buffer);
+    if starts.is_empty() {
+        let keep_from = buffer.len().saturating_sub(3);
+        if keep_from > 0 {
+            buffer.drain(..keep_from);
+        }
+        return Vec::new();
+    }
+
+    if starts[0].0 > 0 {
+        buffer.drain(..starts[0].0);
+        starts = annexb_start_codes(buffer);
+    }
+    if starts.len() < 2 {
+        return Vec::new();
+    }
+
+    let drain_until = starts[starts.len() - 1].0;
+    let nalus = starts
+        .windows(2)
+        .filter_map(|window| {
+            let start = window[0].0;
+            let end = window[1].0;
+            (end > start).then(|| buffer[start..end].to_vec())
+        })
+        .collect();
+    buffer.drain(..drain_until);
+    nalus
+}
+
+fn annexb_start_codes(buffer: &[u8]) -> Vec<(usize, usize)> {
+    let mut starts = Vec::new();
+    let mut index = 0;
+    while index + 3 <= buffer.len() {
+        if index + 4 <= buffer.len() && buffer[index..index + 4] == [0, 0, 0, 1] {
+            starts.push((index, 4));
+            index += 4;
+        } else if buffer[index..index + 3] == [0, 0, 1] {
+            starts.push((index, 3));
+            index += 3;
+        } else {
+            index += 1;
+        }
+    }
+    starts
+}
+
+fn h264_nalu_type(nalu: &[u8]) -> Option<u8> {
+    let start_code_len = if nalu.starts_with(&[0, 0, 0, 1]) {
+        4
+    } else if nalu.starts_with(&[0, 0, 1]) {
+        3
+    } else {
+        return None;
+    };
+    nalu.get(start_code_len).map(|byte| byte & 0x1f)
+}
+
+#[derive(Clone, Copy, Debug)]
+enum EncoderInput {
+    AndroidPngPipe,
+    JpegFrames,
+}
+
+fn encoder_input_for(id: &DeviceId) -> EncoderInput {
+    match id.kind {
+        DeviceKind::Android => EncoderInput::AndroidPngPipe,
+        DeviceKind::Ios => EncoderInput::JpegFrames,
+    }
+}
+
+fn build_h264_ffmpeg_args(input: EncoderInput, settings: &WebRtcStreamSettings) -> Vec<String> {
+    let fps = settings.fps.to_string();
+    let keyframe_interval = settings.fps.saturating_mul(2).clamp(12, 60).to_string();
+    let bitrate_kbps = video_target_bitrate_kbps(settings);
+    let bitrate = format!("{bitrate_kbps}k");
+    let bufsize = format!("{}k", bitrate_kbps.saturating_mul(2));
+    let scale = format!(
+        "scale=trunc(min(min({}/iw\\,1280/ih)\\,1)*iw/2)*2:trunc(min(min({}/iw\\,1280/ih)\\,1)*ih/2)*2,format=yuv420p",
+        settings.max_width, settings.max_width
+    );
+    let mut args = common_video_ffmpeg_args(input, &fps);
+    args.extend([
+        "-an".to_string(),
+        "-vf".to_string(),
+        scale,
+        "-c:v".to_string(),
+        "libx264".to_string(),
+        "-preset".to_string(),
+        "ultrafast".to_string(),
+        "-tune".to_string(),
+        "zerolatency".to_string(),
+        "-profile:v".to_string(),
+        "baseline".to_string(),
+        "-level".to_string(),
+        "3.1".to_string(),
+        "-g".to_string(),
+        keyframe_interval.clone(),
+        "-keyint_min".to_string(),
+        keyframe_interval.clone(),
+        "-sc_threshold".to_string(),
+        "0".to_string(),
+        "-bf".to_string(),
+        "0".to_string(),
+        "-x264-params".to_string(),
+        format!(
+            "keyint={keyframe_interval}:min-keyint={keyframe_interval}:scenecut=0:repeat-headers=1"
+        ),
+        "-b:v".to_string(),
+        bitrate.clone(),
+        "-maxrate".to_string(),
+        bitrate,
+        "-bufsize".to_string(),
+        bufsize,
+        "-bsf:v".to_string(),
+        "h264_metadata=aud=insert".to_string(),
+        "-f".to_string(),
+        "h264".to_string(),
+        "pipe:1".to_string(),
+    ]);
+    args
+}
+
+fn build_vp8_ffmpeg_args(input: EncoderInput, settings: &WebRtcStreamSettings) -> Vec<String> {
+    let fps = settings.fps.to_string();
+    let keyframe_interval = settings.fps.saturating_mul(2).clamp(12, 60).to_string();
+    let bitrate_kbps = video_target_bitrate_kbps(settings);
+    let bitrate = format!("{bitrate_kbps}k");
+    let bufsize = format!("{}k", bitrate_kbps.saturating_mul(2));
+    let scale = format!("scale=trunc(min(iw\\,{})/2)*2:-2", settings.max_width);
+    let mut args = common_video_ffmpeg_args(input, &fps);
+    args.extend([
+        "-an".to_string(),
+        "-vf".to_string(),
+        scale,
+        "-c:v".to_string(),
+        "libvpx".to_string(),
+        "-deadline".to_string(),
+        "realtime".to_string(),
+        "-cpu-used".to_string(),
+        "8".to_string(),
+        "-lag-in-frames".to_string(),
+        "0".to_string(),
+        "-auto-alt-ref".to_string(),
+        "0".to_string(),
+        "-error-resilient".to_string(),
+        "1".to_string(),
+        "-g".to_string(),
+        keyframe_interval,
+        "-quality".to_string(),
+        "realtime".to_string(),
+        "-b:v".to_string(),
+        bitrate.clone(),
+        "-maxrate".to_string(),
+        bitrate,
+        "-bufsize".to_string(),
+        bufsize,
+        "-threads".to_string(),
+        "2".to_string(),
+        "-f".to_string(),
+        "ivf".to_string(),
+        "pipe:1".to_string(),
+    ]);
+    args
+}
+
+fn common_video_ffmpeg_args(input: EncoderInput, fps: &str) -> Vec<String> {
+    let mut args = vec![
+        "-hide_banner".to_string(),
+        "-loglevel".to_string(),
+        "error".to_string(),
+        "-flags".to_string(),
+        "low_delay".to_string(),
+    ];
+    match input {
+        EncoderInput::AndroidPngPipe => args.extend([
+            "-fflags".to_string(),
+            "nobuffer".to_string(),
+            "-f".to_string(),
+            "image2pipe".to_string(),
+            "-framerate".to_string(),
+            fps.to_string(),
+            "-vcodec".to_string(),
+            "png".to_string(),
+            "-i".to_string(),
+            "pipe:0".to_string(),
+        ]),
+        EncoderInput::JpegFrames => args.extend([
+            "-f".to_string(),
+            "image2pipe".to_string(),
+            "-framerate".to_string(),
+            fps.to_string(),
+            "-vcodec".to_string(),
+            "mjpeg".to_string(),
+            "-i".to_string(),
+            "pipe:0".to_string(),
+        ]),
+    }
+    args
+}
+
+fn video_target_bitrate_kbps(settings: &WebRtcStreamSettings) -> u32 {
+    let base: u32 = match settings.max_width {
+        0..=540 => 650,
+        541..=720 => 1_100,
+        721..=1080 => 1_800,
+        _ => 2_800,
+    };
+    let quality_pct: u32 = match settings.quality {
+        0..=60 => 80,
+        61..=75 => 100,
+        _ => 130,
+    };
+    let fps_pct: u32 = if settings.fps >= 18 {
+        120
+    } else if settings.fps <= 10 {
+        85
+    } else {
+        100
+    };
+    (base * quality_pct * fps_pct / 10_000).clamp(350, 4_500)
+}
+
+async fn send_encoder_input<R: ProcessRunner + Clone>(
+    controller: DeviceManager<R>,
+    id: DeviceId,
+    stdin: tokio::process::ChildStdin,
+    peer_connection: Arc<RTCPeerConnection>,
+    settings: WebRtcStreamSettings,
+    input: EncoderInput,
+) -> Result<(), String> {
+    match input {
+        EncoderInput::AndroidPngPipe => {
+            send_android_png_encoder_input(controller, id, stdin, peer_connection, settings).await
+        }
+        EncoderInput::JpegFrames => {
+            send_screenshot_jpeg_encoder_input(controller, id, stdin, peer_connection, settings)
+                .await
+        }
+    }
+}
+
+async fn send_android_png_encoder_input<R: ProcessRunner + Clone>(
+    controller: DeviceManager<R>,
+    id: DeviceId,
+    mut stdin: tokio::process::ChildStdin,
+    peer_connection: Arc<RTCPeerConnection>,
+    settings: WebRtcStreamSettings,
+) -> Result<(), String> {
+    let source_fps = settings.fps.clamp(1, 20) as f32;
+    let sleep_secs = format!("{:.3}", 1.0_f32 / source_fps);
+    let script = format!("while true; do screencap -p; sleep {sleep_secs}; done");
+    let mut source = Command::new(controller.adb_path())
+        .args(["-s", &id.raw, "exec-out", "sh", "-c", &script])
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .kill_on_drop(true)
+        .spawn()
+        .map_err(|error| format!("failed to start Android screencap pipe: {error}"))?;
+    let mut stdout = source
+        .stdout
+        .take()
+        .ok_or_else(|| "Android screencap stdout is unavailable".to_string())?;
+
+    let copy_frames = async {
+        tokio::io::copy(&mut stdout, &mut stdin)
+            .await
+            .map(|_| ())
+            .map_err(|error| format!("Android screencap pipe failed: {error}"))
+    };
+    let watch_connection = async {
         loop {
             if matches!(
-                writer_peer.connection_state(),
+                peer_connection.connection_state(),
                 RTCPeerConnectionState::Failed
                     | RTCPeerConnectionState::Closed
                     | RTCPeerConnectionState::Disconnected
             ) {
                 break;
             }
-            let frame_started = Instant::now();
-            let screenshot = controller
-                .screenshot(&writer_id)
-                .await
-                .map_err(|error| error.to_string())?;
-            let jpeg = prepare_video_jpeg_frame(
-                screenshot.content_type,
-                screenshot.bytes,
-                writer_settings.max_width,
-                writer_settings.quality,
-            )
-            .map_err(|error| error.to_string())?;
-            stdin
-                .write_all(&jpeg)
-                .await
-                .map_err(|error| format!("ffmpeg stdin write failed: {error}"))?;
-            stdin
-                .flush()
-                .await
-                .map_err(|error| format!("ffmpeg stdin flush failed: {error}"))?;
-            let elapsed = frame_started.elapsed();
-            if elapsed < frame_delay {
-                tokio::time::sleep(frame_delay - elapsed).await;
-            }
+            tokio::time::sleep(Duration::from_millis(40)).await;
         }
         Ok::<(), String>(())
     };
 
-    let reader = async move {
-        let mut file_header = [0_u8; 32];
-        stdout
-            .read_exact(&mut file_header)
-            .await
-            .map_err(|error| format!("ffmpeg ivf header read failed: {error}"))?;
-        loop {
-            let mut frame_header = [0_u8; 12];
-            stdout
-                .read_exact(&mut frame_header)
-                .await
-                .map_err(|error| format!("ffmpeg ivf frame header read failed: {error}"))?;
-            let frame_len = u32::from_le_bytes([
-                frame_header[0],
-                frame_header[1],
-                frame_header[2],
-                frame_header[3],
-            ]) as usize;
-            if frame_len == 0 || frame_len > 8 * 1024 * 1024 {
-                return Err(format!(
-                    "ffmpeg emitted invalid VP8 frame length: {frame_len}"
-                ));
-            }
-            let mut frame = vec![0_u8; frame_len];
-            stdout
-                .read_exact(&mut frame)
-                .await
-                .map_err(|error| format!("ffmpeg ivf frame read failed: {error}"))?;
-            track
-                .write_sample(&Sample {
-                    data: Bytes::from(frame),
-                    duration: frame_delay,
-                    ..Default::default()
-                })
-                .await
-                .map_err(|error| format!("WebRTC video sample write failed: {error}"))?;
-        }
+    let result = tokio::select! {
+        result = copy_frames => result,
+        result = watch_connection => result,
     };
+    let _ = source.kill().await;
+    let _ = source.wait().await;
+    result
+}
 
-    tokio::select! {
-        result = writer => result?,
-        result = reader => result?,
+async fn send_screenshot_jpeg_encoder_input<R: ProcessRunner + Clone>(
+    controller: DeviceManager<R>,
+    id: DeviceId,
+    mut stdin: tokio::process::ChildStdin,
+    peer_connection: Arc<RTCPeerConnection>,
+    settings: WebRtcStreamSettings,
+) -> Result<(), String> {
+    let frame_delay = Duration::from_millis(1_000 / u64::from(settings.fps));
+    loop {
+        if matches!(
+            peer_connection.connection_state(),
+            RTCPeerConnectionState::Failed
+                | RTCPeerConnectionState::Closed
+                | RTCPeerConnectionState::Disconnected
+        ) {
+            break;
+        }
+        let frame_started = Instant::now();
+        let screenshot = controller
+            .screenshot(&id)
+            .await
+            .map_err(|error| error.to_string())?;
+        let jpeg = prepare_video_jpeg_frame(
+            screenshot.content_type,
+            screenshot.bytes,
+            settings.max_width,
+            settings.quality,
+        )
+        .map_err(|error| error.to_string())?;
+        stdin
+            .write_all(&jpeg)
+            .await
+            .map_err(|error| format!("ffmpeg stdin write failed: {error}"))?;
+        stdin
+            .flush()
+            .await
+            .map_err(|error| format!("ffmpeg stdin flush failed: {error}"))?;
+        let elapsed = frame_started.elapsed();
+        if elapsed < frame_delay {
+            tokio::time::sleep(frame_delay - elapsed).await;
+        }
     }
-
-    let _ = child.kill().await;
     Ok(())
 }
 
@@ -706,14 +1092,14 @@ async fn send_webrtc_preview<R: ProcessRunner + Clone>(
 
         match controller.screenshot(&id).await {
             Ok(screenshot) => {
-                let encode_jpeg = match settings.stream_format.as_str() {
-                    "jpeg" => true,
-                    "native" => false,
-                    _ => id.kind != DeviceKind::Android && screenshot.content_type != "image/jpeg",
-                };
+                let encode_jpeg = should_encode_preview_frame(&settings.stream_format);
                 let frame = if encode_jpeg {
-                    encode_stream_frame(&screenshot.bytes, settings.max_width, settings.quality)
-                        .unwrap_or_else(|_| (screenshot.content_type, screenshot.bytes))
+                    encode_preview_frame(
+                        screenshot.content_type,
+                        screenshot.bytes,
+                        settings.max_width,
+                        settings.quality,
+                    )
                 } else {
                     (screenshot.content_type, screenshot.bytes)
                 };
@@ -1349,5 +1735,37 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(response.status(), StatusCode::OK);
+    }
+
+    #[test]
+    fn drains_complete_annexb_nalus_and_leaves_tail() {
+        let mut buffer = vec![
+            b'x', b'x', 0, 0, 0, 1, 9, 16, 0, 0, 0, 1, 7, 1, 0, 0, 1, 8, 1, 0, 0, 0, 1, 5, 1, 0, 0,
+            0, 1, 9, 16, 0, 0, 0, 1, 1, 1, 0, 0, 0, 1, 9, 16,
+        ];
+
+        let nalus = drain_complete_annexb_nalus(&mut buffer);
+
+        assert_eq!(nalus.len(), 6);
+        assert_eq!(h264_nalu_type(&nalus[0]), Some(9));
+        assert_eq!(h264_nalu_type(&nalus[1]), Some(7));
+        assert_eq!(h264_nalu_type(&nalus[2]), Some(8));
+        assert_eq!(h264_nalu_type(&nalus[3]), Some(5));
+        assert_eq!(h264_nalu_type(&nalus[4]), Some(9));
+        assert_eq!(h264_nalu_type(&nalus[5]), Some(1));
+        assert_eq!(buffer, vec![0, 0, 0, 1, 9, 16]);
+    }
+
+    #[test]
+    fn keeps_partial_annexb_nalu_until_next_start_code() {
+        let mut buffer = vec![0, 0, 0, 1, 9, 16];
+        assert!(drain_complete_annexb_nalus(&mut buffer).is_empty());
+
+        buffer.extend([0, 0, 1, 5, 1]);
+        let nalus = drain_complete_annexb_nalus(&mut buffer);
+
+        assert_eq!(nalus.len(), 1);
+        assert_eq!(h264_nalu_type(&nalus[0]), Some(9));
+        assert_eq!(buffer, vec![0, 0, 1, 5, 1]);
     }
 }

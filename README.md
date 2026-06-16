@@ -130,11 +130,11 @@ Use a local app path for install:
 
 ## Preview Modes
 
-Appmon supports multiple preview paths:
+Appmon defaults to WebRTC and keeps lower-fidelity paths as fallbacks:
 
-- `WebRTC`: lowest-latency mode. Android uses the emulator native gRPC/WebRTC `RtcService` when `APPMON_ANDROID_GRPC_ENDPOINT` is set, then falls back to Appmon's VP8 media track
-- `Stream`: multipart stream fallback
-- `Polling`: conservative screenshot polling fallback
+- `WebRTC`: default low-latency mode. Appmon captures Android/iOS emulator frames itself and streams them over browser WebRTC even when the emulator does not expose native WebRTC. The default `Appmon WebRTC` transport starts the proven WebRTC data-channel preview immediately; `Fast video` probes Appmon H.264 and VP8 media tracks first; both fall back to HTTP streaming if browser WebRTC is unavailable. Android native emulator WebRTC is optional via the `Native emulator` transport.
+- `Stream`: multipart stream fallback.
+- `Polling`: conservative screenshot polling fallback.
 
 Android input can use the Android Emulator gRPC controller when `APPMON_ANDROID_GRPC_ENDPOINT` is set, matching the same direct `sendTouch` / `sendKey` control surface used by Google's WebRTC emulator sample. If gRPC is unavailable, Appmon falls back to a persistent `adb shell` session and streams pointer gestures as `motionevent` down/move/up commands so drag and scroll feedback does not wait for pointer release. iOS touch control uses `idb` for accurate simulator coordinates. If `idb` is unavailable, tap can fall back to Simulator-window AppleScript control, but swipe, text, and key control require `idb`.
 
